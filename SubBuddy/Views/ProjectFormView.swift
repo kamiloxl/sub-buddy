@@ -8,6 +8,7 @@ struct ProjectFormView: View {
     @State private var name: String = ""
     @State private var projectId: String = ""
     @State private var apiKey: String = ""
+    @State private var selectedColour: ProjectColour = .blue
     @State private var showAPIKey = false
     @State private var connectionStatus: ConnectionStatus = .idle
 
@@ -46,6 +47,8 @@ struct ProjectFormView: View {
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 12))
                     }
+
+                    ColourPickerRow(selection: $selectedColour)
 
                     fieldRow("Project ID") {
                         TextField("proj1ab2c3d4", text: $projectId)
@@ -133,6 +136,7 @@ struct ProjectFormView: View {
             if let project = editingProject {
                 name = project.name
                 projectId = project.projectId
+                selectedColour = project.colour
                 apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) ?? ""
             }
         }
@@ -216,7 +220,7 @@ struct ProjectFormView: View {
         let trimmedApiKey = apiKey.trimmingCharacters(in: .whitespaces)
 
         if let existing = editingProject {
-            let updated = AppProject(id: existing.id, name: trimmedName, projectId: trimmedProjectId)
+            let updated = AppProject(id: existing.id, name: trimmedName, projectId: trimmedProjectId, colour: selectedColour)
             viewModel.updateProject(updated, apiKey: trimmedApiKey)
             withAnimation(.easeInOut(duration: 0.2)) {
                 viewModel.showAddProject = false
@@ -225,7 +229,8 @@ struct ProjectFormView: View {
             viewModel.addProject(
                 name: trimmedName,
                 projectId: trimmedProjectId,
-                apiKey: trimmedApiKey
+                apiKey: trimmedApiKey,
+                colour: selectedColour
             )
         }
     }

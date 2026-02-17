@@ -224,8 +224,8 @@ final class DashboardViewModel: ObservableObject {
 
     // MARK: - Project Management
 
-    func addProject(name: String, projectId: String, apiKey: String) {
-        let project = AppProject(name: name, projectId: projectId)
+    func addProject(name: String, projectId: String, apiKey: String, colour: ProjectColour = .blue) {
+        let project = AppProject(name: name, projectId: projectId, colour: colour)
         settings.addProject(project)
         _ = KeychainService.shared.saveAPIKey(apiKey, forProjectId: project.id)
         selectTab(project.id.uuidString)

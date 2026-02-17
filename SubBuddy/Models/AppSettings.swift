@@ -1,17 +1,56 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Project Colour
+
+enum ProjectColour: String, Codable, CaseIterable, Equatable {
+    case red, orange, yellow, green, mint, teal, blue, indigo, purple, pink
+
+    var color: Color {
+        switch self {
+        case .red:    return .red
+        case .orange: return .orange
+        case .yellow: return .yellow
+        case .green:  return .green
+        case .mint:   return .mint
+        case .teal:   return .teal
+        case .blue:   return .blue
+        case .indigo: return .indigo
+        case .purple: return .purple
+        case .pink:   return .pink
+        }
+    }
+
+    var label: String {
+        rawValue.capitalized
+    }
+}
+
 // MARK: - App Project
 
 struct AppProject: Codable, Identifiable, Equatable {
     let id: UUID
     var name: String
     var projectId: String
+    var colour: ProjectColour
 
-    init(id: UUID = UUID(), name: String, projectId: String) {
+    init(id: UUID = UUID(), name: String, projectId: String, colour: ProjectColour = .blue) {
         self.id = id
         self.name = name
         self.projectId = projectId
+        self.colour = colour
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, projectId, colour
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        projectId = try container.decode(String.self, forKey: .projectId)
+        colour = (try? container.decode(ProjectColour.self, forKey: .colour)) ?? .blue
     }
 }
 

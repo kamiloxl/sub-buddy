@@ -27,6 +27,7 @@ struct TabBarView: View {
                     TabPill(
                         title: project.name,
                         icon: "app.fill",
+                        colour: project.colour.color,
                         isSelected: viewModel.selectedTab == project.id.uuidString
                     ) {
                         withAnimation(.easeInOut(duration: 0.15)) {
@@ -71,14 +72,25 @@ struct TabBarView: View {
 struct TabPill: View {
     let title: String
     let icon: String
+    var colour: Color? = nil
     let isSelected: Bool
     let action: () -> Void
+
+    private var accentColour: Color {
+        colour ?? Color.accentColor
+    }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 3) {
-                Image(systemName: icon)
-                    .font(.system(size: 8))
+                if let colour {
+                    Circle()
+                        .fill(colour)
+                        .frame(width: 6, height: 6)
+                } else {
+                    Image(systemName: icon)
+                        .font(.system(size: 8))
+                }
                 Text(title)
                     .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
                     .lineLimit(1)
@@ -87,7 +99,7 @@ struct TabPill: View {
             .padding(.vertical, 4)
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+                    .fill(isSelected ? accentColour.opacity(0.15) : Color.clear)
             }
             .foregroundStyle(isSelected ? .primary : .secondary)
         }

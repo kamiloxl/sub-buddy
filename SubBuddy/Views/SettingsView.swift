@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var saveStatus: SaveStatus = .idle
     @State private var projectName: String = ""
     @State private var projectIdText: String = ""
+    @State private var selectedColour: ProjectColour = .blue
     @State private var showDeleteConfirm = false
 
     enum SaveStatus {
@@ -119,6 +120,8 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
             }
+
+            ColourPickerRow(selection: $selectedColour)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Project ID")
@@ -233,6 +236,7 @@ struct SettingsView: View {
         }
         projectName = project.name
         projectIdText = project.projectId
+        selectedColour = project.colour
         apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) ?? ""
         showAPIKey = false
         saveStatus = .idle
@@ -247,7 +251,8 @@ struct SettingsView: View {
         let updated = AppProject(
             id: project.id,
             name: projectName.trimmingCharacters(in: .whitespaces),
-            projectId: projectIdText.trimmingCharacters(in: .whitespaces)
+            projectId: projectIdText.trimmingCharacters(in: .whitespaces),
+            colour: selectedColour
         )
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespaces)
         viewModel.updateProject(updated, apiKey: trimmedKey)
