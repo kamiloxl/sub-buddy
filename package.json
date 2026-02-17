@@ -1,0 +1,31 @@
+{
+  "name": "sub-buddy",
+  "version": "1.0.2",
+  "description": "macOS menu bar app for RevenueCat subscription metrics",
+  "author": "Kamil Nowicz",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "bin": {
+    "sub-buddy": "bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "dist/"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "preuninstall": "node scripts/preuninstall.js",
+    "uninstall": "node scripts/preuninstall.js"
+  },
+  "keywords": [
+    "revenuecat",
+    "subscriptions",
+    "macos",
+    "menu-bar",
+    "mrr",
+    "metrics"
+  ]
+}

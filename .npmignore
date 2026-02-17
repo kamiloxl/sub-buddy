@@ -1,0 +1,19 @@
+# Source code (not needed by users)
+SubBuddy/
+SubBuddy.xcodeproj/
+project.yml
+Makefile
+
+# Build artefacts
+build/
+
+# Git
+.git/
+.gitignore
+
+# macOS
+.DS_Store
+
+# IDE
+.cursor/
+*.xcworkspace

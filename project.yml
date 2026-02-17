@@ -1,0 +1,32 @@
+name: SubBuddy
+options:
+  bundleIdPrefix: com.subbuddy
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  minimumXcodeGenVersion: "2.35.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+targets:
+  SubBuddy:
+    type: application
+    platform: macOS
+    sources:
+      - SubBuddy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.subbuddy.app
+        PRODUCT_NAME: Sub Buddy
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: SubBuddy/Info.plist
+        GENERATE_INFOPLIST_FILE: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: false
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        PROVISIONING_PROFILE_SPECIFIER: ""
