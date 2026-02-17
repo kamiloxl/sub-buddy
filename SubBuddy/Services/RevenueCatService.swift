@@ -67,24 +67,24 @@ final class RevenueCatService {
 
     // MARK: - Public API
 
-    func fetchDashboardData() async throws -> DashboardData {
-        let settings = AppSettings.shared
-
-        guard let apiKey = KeychainService.shared.getAPIKey(),
-              !apiKey.isEmpty,
-              !settings.projectId.isEmpty else {
-            logger.error("Not configured — projectId: '\(settings.projectId)'")
+    func fetchDashboardData(
+        projectId: String,
+        apiKey: String,
+        currency: String
+    ) async throws -> DashboardData {
+        guard !apiKey.isEmpty, !projectId.isEmpty else {
+            logger.error("Not configured — projectId: '\(projectId)'")
             throw RevenueCatError.notConfigured
         }
 
-        logger.info("Fetching dashboard data for project \(settings.projectId)")
+        logger.info("Fetching dashboard data for project \(projectId)")
 
-        var dashboard = DashboardData(currency: settings.currency)
+        var dashboard = DashboardData(currency: currency)
 
         let overview = try await fetchOverviewMetrics(
-            projectId: settings.projectId,
+            projectId: projectId,
             apiKey: apiKey,
-            currency: settings.currency
+            currency: currency
         )
 
         logger.info("Received \(overview.metrics.count) overview metrics")
@@ -107,16 +107,16 @@ final class RevenueCatService {
         }
 
         async let newSubsResult = fetchTodayChartValue(
-            projectId: settings.projectId,
+            projectId: projectId,
             apiKey: apiKey,
             chartName: .activesNew,
-            currency: settings.currency
+            currency: currency
         )
         async let trialConvResult = fetchTodayChartValue(
-            projectId: settings.projectId,
+            projectId: projectId,
             apiKey: apiKey,
             chartName: .trialConversion,
-            currency: settings.currency
+            currency: currency
         )
 
         let (newSubs, trialConv) = try await (newSubsResult, trialConvResult)
@@ -124,9 +124,9 @@ final class RevenueCatService {
         dashboard.trialsConvertingToday = Int(trialConv)
 
         let charts = await fetchAllCharts(
-            projectId: settings.projectId,
+            projectId: projectId,
             apiKey: apiKey,
-            currency: settings.currency,
+            currency: currency,
             days: 7
         )
         dashboard.charts = charts

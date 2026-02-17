@@ -1,6 +1,20 @@
 import Foundation
 import SwiftUI
 
+// MARK: - App Project
+
+struct AppProject: Codable, Identifiable, Equatable {
+    let id: UUID
+    var name: String
+    var projectId: String
+
+    init(id: UUID = UUID(), name: String, projectId: String) {
+        self.id = id
+        self.name = name
+        self.projectId = projectId
+    }
+}
+
 // MARK: - Metric Kind
 
 enum MetricKind: String, Codable, CaseIterable {
@@ -98,9 +112,62 @@ final class AppSettings: ObservableObject {
     @AppStorage("refreshInterval") var refreshInterval: Int = 5 // minutes
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
     @AppStorage("metricConfigsJSON") var metricConfigsJSON: String = ""
+    @AppStorage("projectsData") var projectsData: String = ""
+    @AppStorage("selectedTabId") var selectedTabId: String = "total"
+
+    // MARK: - Multi-project Support
+
+    var projects: [AppProject] {
+        get {
+            guard !projectsData.isEmpty,
+                  let data = projectsData.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([AppProject].self, from: data)
+            else { return [] }
+            return decoded
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue),
+               let json = String(data: data, encoding: .utf8) {
+                projectsData = json
+            }
+            objectWillChange.send()
+        }
+    }
+
+    func addProject(_ project: AppProject) {
+        var current = projects
+        current.append(project)
+        projects = current
+    }
+
+    func removeProject(_ id: UUID) {
+        var current = projects
+        current.removeAll { $0.id == id }
+        projects = current
+    }
+
+    func updateProject(_ project: AppProject) {
+        var current = projects
+        if let index = current.firstIndex(where: { $0.id == project.id }) {
+            current[index] = project
+            projects = current
+        }
+    }
+
+    /// Migrate from single-project storage to multi-project
+    func migrateFromSingleProject() {
+        guard projects.isEmpty, !projectId.isEmpty else { return }
+        guard let apiKey = KeychainService.shared.getAPIKey(), !apiKey.isEmpty else { return }
+
+        let project = AppProject(name: "My App", projectId: projectId)
+        addProject(project)
+        _ = KeychainService.shared.saveAPIKey(apiKey, forProjectId: project.id)
+    }
 
     var isConfigured: Bool {
-        !projectId.isEmpty && KeychainService.shared.getAPIKey() != nil
+        projects.contains { project in
+            KeychainService.shared.getAPIKey(forProjectId: project.id) != nil
+        }
     }
 
     var metricConfigs: [MetricConfig] {

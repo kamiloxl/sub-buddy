@@ -123,6 +123,7 @@ struct KeychainAccessStep: View {
 struct APIKeyStep: View {
     @Binding var apiKey: String
     @Binding var projectId: String
+    @Binding var projectName: String
 
     @State private var showAPIKey = false
     @State private var animateIcon = false
@@ -168,6 +169,16 @@ struct APIKeyStep: View {
             }
 
             VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("App name")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    TextField("My App", text: $projectName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                }
+
                 VStack(alignment: .leading, spacing: 5) {
                     Text("API key (v2)")
                         .font(.system(size: 11, weight: .medium))

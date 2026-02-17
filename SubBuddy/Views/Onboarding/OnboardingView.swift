@@ -13,6 +13,7 @@ struct OnboardingView: View {
     // Step 2 state
     @State private var apiKey = ""
     @State private var projectId = ""
+    @State private var projectName = ""
 
     // Step 3 state
     @State private var metricConfigs = MetricConfig.defaults
@@ -128,7 +129,7 @@ struct OnboardingView: View {
                             .transition(stepTransition)
                     }
                     if currentStep == 1 {
-                        APIKeyStep(apiKey: $apiKey, projectId: $projectId)
+                        APIKeyStep(apiKey: $apiKey, projectId: $projectId, projectName: $projectName)
                             .transition(stepTransition)
                     }
                     if currentStep == 2 {
@@ -287,10 +288,17 @@ struct OnboardingView: View {
     // MARK: - Complete
 
     private func completeOnboarding() {
-        KeychainService.shared.saveAPIKey(apiKey)
-
         let settings = AppSettings.shared
+
+        // Create project with the provided credentials
+        let project = AppProject(name: projectName.isEmpty ? "My App" : projectName, projectId: projectId)
+        settings.addProject(project)
+        _ = KeychainService.shared.saveAPIKey(apiKey, forProjectId: project.id)
+
+        // Keep legacy fields for backward compatibility
         settings.projectId = projectId
+        _ = KeychainService.shared.saveAPIKey(apiKey)
+
         settings.metricConfigs = metricConfigs
         settings.hasCompletedOnboarding = true
 

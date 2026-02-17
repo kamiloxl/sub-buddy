@@ -7,55 +7,29 @@ struct SettingsView: View {
     @State private var apiKey: String = ""
     @State private var showAPIKey = false
     @State private var saveStatus: SaveStatus = .idle
+    @State private var projectName: String = ""
+    @State private var projectIdText: String = ""
+    @State private var showDeleteConfirm = false
 
     enum SaveStatus {
         case idle, saving, saved, error(String)
     }
 
+    /// The project for the currently selected tab (nil if on "total")
+    private var currentProject: AppProject? {
+        guard let uuid = UUID(uuidString: viewModel.selectedTab) else { return nil }
+        return settings.projects.first { $0.id == uuid }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // API Key
-                settingsSection("API Configuration") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("RevenueCat API key (v2)")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 6) {
-                            Group {
-                                if showAPIKey {
-                                    TextField("sk_...", text: $apiKey)
-                                } else {
-                                    SecureField("sk_...", text: $apiKey)
-                                }
-                            }
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 12, design: .monospaced))
-
-                            Button {
-                                showAPIKey.toggle()
-                            } label: {
-                                Image(systemName: showAPIKey ? "eye.slash" : "eye")
-                                    .font(.system(size: 11))
-                            }
-                            .buttonStyle(.plain)
-                            .help(showAPIKey ? "Hide key" : "Show key")
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Project ID")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-
-                        TextField("proj1ab2c3d4", text: $settings.projectId)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 12, design: .monospaced))
-                    }
+                // Per-project settings (only when a project tab is selected)
+                if let project = currentProject {
+                    projectSection(project)
                 }
 
-                // Preferences
+                // Global preferences
                 settingsSection("Preferences") {
                     HStack {
                         Text("Currency")
@@ -88,7 +62,7 @@ struct SettingsView: View {
 
                 // Actions
                 HStack {
-                    Button("Cancel") {
+                    Button("Close") {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             viewModel.showSettings = false
                         }
@@ -112,18 +86,117 @@ struct SettingsView: View {
                             .transition(.opacity)
                     }
 
-                    Button("Save & Connect") {
-                        save()
+                    if currentProject != nil {
+                        Button("Save") {
+                            saveProjectSettings()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(apiKey.isEmpty || projectIdText.isEmpty || projectName.isEmpty)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(apiKey.isEmpty || settings.projectId.isEmpty)
                 }
             }
             .padding(12)
         }
         .onAppear {
-            apiKey = KeychainService.shared.getAPIKey() ?? ""
+            loadProjectSettings()
+        }
+        .onChange(of: viewModel.selectedTab) { _ in
+            loadProjectSettings()
+        }
+    }
+
+    // MARK: - Project Section
+
+    private func projectSection(_ project: AppProject) -> some View {
+        settingsSection("Project: \(project.name)") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Display name")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                TextField("My App", text: $projectName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Project ID")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                TextField("proj1ab2c3d4", text: $projectIdText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("RevenueCat API key (v2)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 6) {
+                    Group {
+                        if showAPIKey {
+                            TextField("sk_...", text: $apiKey)
+                        } else {
+                            SecureField("sk_...", text: $apiKey)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+
+                    Button {
+                        showAPIKey.toggle()
+                    } label: {
+                        Image(systemName: showAPIKey ? "eye.slash" : "eye")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .help(showAPIKey ? "Hide key" : "Show key")
+                }
+            }
+
+            // Delete project
+            if settings.projects.count > 1 {
+                Divider()
+
+                if showDeleteConfirm {
+                    HStack {
+                        Text("Remove this project?")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
+
+                        Button("Cancel") {
+                            withAnimation { showDeleteConfirm = false }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                        Button("Remove") {
+                            viewModel.removeProject(project.id)
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                viewModel.showSettings = false
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .foregroundStyle(.red)
+                    }
+                } else {
+                    Button {
+                        withAnimation { showDeleteConfirm = true }
+                    } label: {
+                        Label("Remove project", systemImage: "trash")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 
@@ -149,29 +222,47 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Save
+    // MARK: - Load / Save
 
-    private func save() {
-        withAnimation { saveStatus = .saving }
-
-        let saved = KeychainService.shared.saveAPIKey(apiKey)
-        if !saved {
-            withAnimation { saveStatus = .error("Failed to save API key") }
+    private func loadProjectSettings() {
+        guard let project = currentProject else {
+            apiKey = ""
+            projectName = ""
+            projectIdText = ""
             return
         }
+        projectName = project.name
+        projectIdText = project.projectId
+        apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) ?? ""
+        showAPIKey = false
+        saveStatus = .idle
+        showDeleteConfirm = false
+    }
+
+    private func saveProjectSettings() {
+        guard let project = currentProject else { return }
+
+        withAnimation { saveStatus = .saving }
+
+        let updated = AppProject(
+            id: project.id,
+            name: projectName.trimmingCharacters(in: .whitespaces),
+            projectId: projectIdText.trimmingCharacters(in: .whitespaces)
+        )
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespaces)
+        viewModel.updateProject(updated, apiKey: trimmedKey)
 
         withAnimation { saveStatus = .saved }
 
         viewModel.restartTimer()
 
         Task {
-            try? await Task.sleep(nanoseconds: 600_000_000)
+            try? await Task.sleep(nanoseconds: 800_000_000)
             await MainActor.run {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     viewModel.showSettings = false
                 }
             }
-            await viewModel.refresh()
         }
     }
 }

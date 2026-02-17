@@ -10,21 +10,30 @@ struct MetricsDashboardView: View {
 
             Divider()
 
+            // Tab bar
+            TabBarView(viewModel: viewModel)
+
+            Divider()
+
             if viewModel.showSettings {
                 SettingsView(viewModel: viewModel)
+            } else if viewModel.showAddProject {
+                ProjectFormView(viewModel: viewModel)
             } else {
                 // Content
                 ScrollView {
                     VStack(spacing: 8) {
-                        if viewModel.isLoading {
+                        if viewModel.isLoading && viewModel.currentDashboardData == nil {
                             loadingView
-                        } else if let error = viewModel.errorMessage {
+                        } else if let error = viewModel.currentError {
                             errorState(error)
-                        } else if let data = viewModel.dashboardData {
+                        } else if let data = viewModel.currentDashboardData {
                             metricsGrid(data)
                             if let charts = data.charts {
                                 chartsSection(data: data, charts: charts)
                             }
+                        } else if viewModel.isLoading {
+                            loadingView
                         } else {
                             emptyState
                         }
@@ -48,7 +57,7 @@ struct MetricsDashboardView: View {
                 Text("Sub Buddy")
                     .font(.system(size: 14, weight: .bold))
 
-                if let data = viewModel.dashboardData {
+                if let data = viewModel.currentDashboardData {
                     Text("Updated \(data.lastUpdatedFormatted)")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -76,6 +85,7 @@ struct MetricsDashboardView: View {
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.showAddProject = false
                         viewModel.showSettings.toggle()
                     }
                 } label: {

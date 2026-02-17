@@ -10,7 +10,7 @@ struct SubBuddyApp: App {
     var body: some Scene {
         MenuBarExtra {
             MetricsDashboardView(viewModel: viewModel)
-                .frame(width: 360)
+                .frame(width: 380)
                 .onAppear {
                     showOnboardingIfNeeded()
                 }
@@ -41,7 +41,7 @@ struct MenuBarLabel: View {
             if viewModel.isLoading {
                 Image(systemName: "chart.bar.fill")
                 Text("...")
-            } else if let data = viewModel.dashboardData {
+            } else if let data = viewModel.totalData {
                 Image(systemName: data.mrrDirection.icon)
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(data.mrrDirection.color)
@@ -59,49 +59,218 @@ struct MenuBarLabel: View {
 
 @MainActor
 final class DashboardViewModel: ObservableObject {
-    @Published var dashboardData: DashboardData?
+    @Published var projectDataMap: [UUID: DashboardData] = [:]
+    @Published var projectErrors: [UUID: String] = [:]
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var showSettings = false
+    @Published var showAddProject = false
+    @Published var selectedTab: String = "total"
 
     private var refreshTimer: Timer?
     private let settings = AppSettings.shared
 
     init() {
-        logger.info("DashboardViewModel init — onboarded: \(self.settings.hasCompletedOnboarding)")
+        settings.migrateFromSingleProject()
+        selectedTab = settings.selectedTabId
+
+        logger.info("DashboardViewModel init — onboarded: \(self.settings.hasCompletedOnboarding), projects: \(self.settings.projects.count)")
         if !settings.hasCompletedOnboarding {
-            // Onboarding will handle configuration — skip Keychain access
+            // Onboarding will handle configuration
         } else if settings.isConfigured {
             Task { await refresh() }
         } else {
-            showSettings = true
+            showAddProject = true
         }
         startTimer()
     }
 
+    // MARK: - Tab Selection
+
+    func selectTab(_ tab: String) {
+        selectedTab = tab
+        settings.selectedTabId = tab
+        showSettings = false
+        showAddProject = false
+    }
+
+    // MARK: - Current Data
+
+    var currentDashboardData: DashboardData? {
+        if selectedTab == "total" {
+            return totalData
+        }
+        if let uuid = UUID(uuidString: selectedTab) {
+            return projectDataMap[uuid]
+        }
+        return nil
+    }
+
+    var currentError: String? {
+        if selectedTab == "total" {
+            guard !settings.projects.isEmpty else { return nil }
+            if projectErrors.count == settings.projects.count {
+                return "All projects failed to load"
+            }
+            return nil
+        }
+        if let uuid = UUID(uuidString: selectedTab) {
+            return projectErrors[uuid]
+        }
+        return nil
+    }
+
+    /// Aggregated data across all projects (used for menu bar and total tab)
+    var totalData: DashboardData? {
+        guard !projectDataMap.isEmpty else { return nil }
+
+        var total = DashboardData(currency: settings.currency)
+        for data in projectDataMap.values {
+            total.mrr += data.mrr
+            total.mrrChange24h += data.mrrChange24h
+            total.activeSubscriptions += data.activeSubscriptions
+            total.activeTrials += data.activeTrials
+            total.newSubscriptionsToday += data.newSubscriptionsToday
+            total.newCustomersToday += data.newCustomersToday
+            total.trialsConvertingToday += data.trialsConvertingToday
+            total.trialPrediction += data.trialPrediction
+        }
+        total.charts = aggregateCharts()
+        total.lastUpdated = projectDataMap.values.compactMap(\.lastUpdated).max()
+        return total
+    }
+
+    private func aggregateCharts() -> DashboardCharts? {
+        let allCharts = projectDataMap.values.compactMap(\.charts)
+        guard !allCharts.isEmpty else { return nil }
+
+        return DashboardCharts(
+            mrrTrend: mergeChartPoints(allCharts.map(\.mrrTrend)),
+            subscriberGrowth: mergeChartPoints(allCharts.map(\.subscriberGrowth)),
+            revenueTrend: mergeChartPoints(allCharts.map(\.revenueTrend)),
+            trialConversions: mergeChartPoints(allCharts.map(\.trialConversions))
+        )
+    }
+
+    private func mergeChartPoints(_ series: [[ChartDataPoint]]) -> [ChartDataPoint] {
+        guard series.count > 1 else { return series.first ?? [] }
+
+        var dateMap: [String: Double] = [:]
+        var dateOrder: [String] = []
+
+        for points in series {
+            for point in points {
+                guard let date = point.date else { continue }
+                if dateMap[date] == nil { dateOrder.append(date) }
+                dateMap[date, default: 0] += point.value ?? 0
+            }
+        }
+
+        return dateOrder.map { ChartDataPoint(date: $0, value: dateMap[$0]) }
+    }
+
+    // MARK: - Refresh
+
     func refresh() async {
-        guard settings.isConfigured else {
-            logger.warning("Not configured, opening settings")
-            errorMessage = "Please configure your API key and project ID"
-            showSettings = true
+        let projects = settings.projects
+        let currency = settings.currency
+
+        guard !projects.isEmpty else {
+            logger.warning("No projects configured")
+            errorMessage = "No projects configured"
             return
         }
 
         isLoading = true
         errorMessage = nil
 
-        do {
-            let data = try await RevenueCatService.shared.fetchDashboardData()
-            dashboardData = data
-            errorMessage = nil
-            logger.info("Dashboard refreshed — MRR: \(data.mrr)")
-        } catch {
-            logger.error("Refresh failed: \(error.localizedDescription)")
-            errorMessage = error.localizedDescription
+        await withTaskGroup(of: (UUID, Result<DashboardData, Error>).self) { group in
+            for project in projects {
+                let pid = project.id
+                let rcProjectId = project.projectId
+                group.addTask { [weak self] in
+                    guard self != nil else { return (pid, .failure(RevenueCatError.notConfigured)) }
+                    do {
+                        guard let apiKey = KeychainService.shared.getAPIKey(forProjectId: pid) else {
+                            throw RevenueCatError.notConfigured
+                        }
+                        let data = try await RevenueCatService.shared.fetchDashboardData(
+                            projectId: rcProjectId,
+                            apiKey: apiKey,
+                            currency: currency
+                        )
+                        return (pid, .success(data))
+                    } catch {
+                        return (pid, .failure(error))
+                    }
+                }
+            }
+
+            for await (projectId, result) in group {
+                switch result {
+                case .success(let data):
+                    projectDataMap[projectId] = data
+                    projectErrors.removeValue(forKey: projectId)
+                    logger.info("Project \(projectId) refreshed — MRR: \(data.mrr)")
+                case .failure(let error):
+                    projectErrors[projectId] = error.localizedDescription
+                    logger.error("Project \(projectId) failed: \(error.localizedDescription)")
+                }
+            }
         }
 
         isLoading = false
     }
+
+    // MARK: - Project Management
+
+    func addProject(name: String, projectId: String, apiKey: String) {
+        let project = AppProject(name: name, projectId: projectId)
+        settings.addProject(project)
+        _ = KeychainService.shared.saveAPIKey(apiKey, forProjectId: project.id)
+        selectTab(project.id.uuidString)
+        showAddProject = false
+
+        Task { await refreshSingleProject(project) }
+    }
+
+    func removeProject(_ id: UUID) {
+        settings.removeProject(id)
+        _ = KeychainService.shared.deleteAPIKey(forProjectId: id)
+        projectDataMap.removeValue(forKey: id)
+        projectErrors.removeValue(forKey: id)
+
+        if selectedTab == id.uuidString {
+            selectTab("total")
+        }
+    }
+
+    func updateProject(_ project: AppProject, apiKey: String?) {
+        settings.updateProject(project)
+        if let apiKey {
+            _ = KeychainService.shared.saveAPIKey(apiKey, forProjectId: project.id)
+        }
+
+        Task { await refreshSingleProject(project) }
+    }
+
+    private func refreshSingleProject(_ project: AppProject) async {
+        guard let apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) else { return }
+
+        do {
+            let data = try await RevenueCatService.shared.fetchDashboardData(
+                projectId: project.projectId,
+                apiKey: apiKey,
+                currency: settings.currency
+            )
+            projectDataMap[project.id] = data
+            projectErrors.removeValue(forKey: project.id)
+        } catch {
+            projectErrors[project.id] = error.localizedDescription
+        }
+    }
+
+    // MARK: - Timer
 
     func startTimer() {
         refreshTimer?.invalidate()
