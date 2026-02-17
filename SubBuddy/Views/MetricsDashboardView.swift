@@ -19,6 +19,8 @@ struct MetricsDashboardView: View {
                 SettingsView(viewModel: viewModel)
             } else if viewModel.showAddProject {
                 ProjectFormView(viewModel: viewModel)
+            } else if viewModel.showAIReport {
+                AIReportView(viewModel: viewModel)
             } else {
                 // Content
                 ScrollView {
@@ -85,7 +87,22 @@ struct MetricsDashboardView: View {
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.showSettings = false
                         viewModel.showAddProject = false
+                        viewModel.showAIReport.toggle()
+                    }
+                } label: {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(viewModel.showAIReport ? .purple : .primary)
+                }
+                .buttonStyle(.plain)
+                .help("AI report")
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.showAddProject = false
+                        viewModel.showAIReport = false
                         viewModel.showSettings.toggle()
                     }
                 } label: {

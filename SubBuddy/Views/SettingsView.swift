@@ -6,6 +6,8 @@ struct SettingsView: View {
 
     @State private var apiKey: String = ""
     @State private var showAPIKey = false
+    @State private var openAIKey: String = ""
+    @State private var showOpenAIKey = false
     @State private var saveStatus: SaveStatus = .idle
     @State private var projectName: String = ""
     @State private var projectIdText: String = ""
@@ -25,40 +27,12 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // Per-project settings (only when a project tab is selected)
+                // General settings (always visible)
+                generalSection
+
+                // Per-app settings (only when a project tab is selected)
                 if let project = currentProject {
                     projectSection(project)
-                }
-
-                // Global preferences
-                settingsSection("Preferences") {
-                    HStack {
-                        Text("Currency")
-                            .font(.system(size: 12))
-
-                        Spacer()
-
-                        Picker("", selection: $settings.currency) {
-                            ForEach(AppSettings.availableCurrencies, id: \.self) { currency in
-                                Text(currency).tag(currency)
-                            }
-                        }
-                        .frame(width: 100)
-                    }
-
-                    HStack {
-                        Text("Refresh interval")
-                            .font(.system(size: 12))
-
-                        Spacer()
-
-                        Picker("", selection: $settings.refreshInterval) {
-                            ForEach(AppSettings.refreshIntervals, id: \.self) { interval in
-                                Text("\(interval) min").tag(interval)
-                            }
-                        }
-                        .frame(width: 100)
-                    }
                 }
 
                 // Actions
@@ -87,30 +61,94 @@ struct SettingsView: View {
                             .transition(.opacity)
                     }
 
-                    if currentProject != nil {
-                        Button("Save") {
-                            saveProjectSettings()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(apiKey.isEmpty || projectIdText.isEmpty || projectName.isEmpty)
+                    Button("Save") {
+                        saveAllSettings()
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                 }
             }
             .padding(12)
         }
         .onAppear {
-            loadProjectSettings()
+            loadSettings()
         }
         .onChange(of: viewModel.selectedTab) { _ in
-            loadProjectSettings()
+            loadSettings()
+        }
+    }
+
+    // MARK: - General Section
+
+    private var generalSection: some View {
+        settingsSection("General") {
+            HStack {
+                Text("Currency")
+                    .font(.system(size: 12))
+
+                Spacer()
+
+                Picker("", selection: $settings.currency) {
+                    ForEach(AppSettings.availableCurrencies, id: \.self) { currency in
+                        Text(currency).tag(currency)
+                    }
+                }
+                .frame(width: 100)
+            }
+
+            HStack {
+                Text("Refresh interval")
+                    .font(.system(size: 12))
+
+                Spacer()
+
+                Picker("", selection: $settings.refreshInterval) {
+                    ForEach(AppSettings.refreshIntervals, id: \.self) { interval in
+                        Text("\(interval) min").tag(interval)
+                    }
+                }
+                .frame(width: 100)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("OpenAI API key")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 6) {
+                    Group {
+                        if showOpenAIKey {
+                            TextField("sk-...", text: $openAIKey)
+                        } else {
+                            SecureField("sk-...", text: $openAIKey)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+
+                    Button {
+                        showOpenAIKey.toggle()
+                    } label: {
+                        Image(systemName: showOpenAIKey ? "eye.slash" : "eye")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .help(showOpenAIKey ? "Hide key" : "Show key")
+                }
+
+                Text("Used for AI-generated reports. Your key is stored locally in the keychain.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 
     // MARK: - Project Section
 
     private func projectSection(_ project: AppProject) -> some View {
-        settingsSection("Project: \(project.name)") {
+        settingsSection("App: \(project.name)") {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Display name")
                     .font(.system(size: 11, weight: .medium))
@@ -227,7 +265,10 @@ struct SettingsView: View {
 
     // MARK: - Load / Save
 
-    private func loadProjectSettings() {
+    private func loadSettings() {
+        openAIKey = KeychainService.shared.getOpenAIKey() ?? ""
+        showOpenAIKey = false
+
         guard let project = currentProject else {
             apiKey = ""
             projectName = ""
@@ -243,19 +284,28 @@ struct SettingsView: View {
         showDeleteConfirm = false
     }
 
-    private func saveProjectSettings() {
-        guard let project = currentProject else { return }
-
+    private func saveAllSettings() {
         withAnimation { saveStatus = .saving }
 
-        let updated = AppProject(
-            id: project.id,
-            name: projectName.trimmingCharacters(in: .whitespaces),
-            projectId: projectIdText.trimmingCharacters(in: .whitespaces),
-            colour: selectedColour
-        )
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespaces)
-        viewModel.updateProject(updated, apiKey: trimmedKey)
+        // Save OpenAI key
+        let trimmedOpenAIKey = openAIKey.trimmingCharacters(in: .whitespaces)
+        if trimmedOpenAIKey.isEmpty {
+            KeychainService.shared.deleteOpenAIKey()
+        } else {
+            KeychainService.shared.saveOpenAIKey(trimmedOpenAIKey)
+        }
+
+        // Save project settings if a project is selected
+        if let project = currentProject {
+            let updated = AppProject(
+                id: project.id,
+                name: projectName.trimmingCharacters(in: .whitespaces),
+                projectId: projectIdText.trimmingCharacters(in: .whitespaces),
+                colour: selectedColour
+            )
+            let trimmedKey = apiKey.trimmingCharacters(in: .whitespaces)
+            viewModel.updateProject(updated, apiKey: trimmedKey)
+        }
 
         withAnimation { saveStatus = .saved }
 

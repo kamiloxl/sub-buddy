@@ -65,6 +65,7 @@ final class DashboardViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var showSettings = false
     @Published var showAddProject = false
+    @Published var showAIReport = false
     @Published var selectedTab: String = "total"
 
     private var refreshTimer: Timer?
@@ -92,6 +93,7 @@ final class DashboardViewModel: ObservableObject {
         settings.selectedTabId = tab
         showSettings = false
         showAddProject = false
+        showAIReport = false
     }
 
     // MARK: - Current Data
@@ -268,6 +270,71 @@ final class DashboardViewModel: ObservableObject {
         } catch {
             projectErrors[project.id] = error.localizedDescription
         }
+    }
+
+    // MARK: - AI Report
+
+    func generateReport(period: ReportPeriod) async throws -> String {
+        let projects = settings.projects
+        let currency = settings.currency
+
+        // Determine project name and data source
+        let projectName: String
+        let dashboardData: DashboardData
+        var charts: DashboardCharts?
+
+        if selectedTab == "total" {
+            projectName = "All projects"
+            guard let total = totalData else {
+                throw OpenAIError.emptyResponse
+            }
+            dashboardData = total
+
+            // Fetch charts for the selected period across all projects
+            var allCharts: [DashboardCharts] = []
+            for project in projects {
+                guard let apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) else { continue }
+                let projectCharts = await RevenueCatService.shared.fetchAllCharts(
+                    projectId: project.projectId,
+                    apiKey: apiKey,
+                    currency: currency,
+                    days: period.days
+                )
+                allCharts.append(projectCharts)
+            }
+
+            if !allCharts.isEmpty {
+                charts = DashboardCharts(
+                    mrrTrend: mergeChartPoints(allCharts.map(\.mrrTrend)),
+                    subscriberGrowth: mergeChartPoints(allCharts.map(\.subscriberGrowth)),
+                    revenueTrend: mergeChartPoints(allCharts.map(\.revenueTrend)),
+                    trialConversions: mergeChartPoints(allCharts.map(\.trialConversions))
+                )
+            }
+        } else if let uuid = UUID(uuidString: selectedTab),
+                  let project = projects.first(where: { $0.id == uuid }),
+                  let data = projectDataMap[uuid] {
+            projectName = project.name
+            dashboardData = data
+
+            if let apiKey = KeychainService.shared.getAPIKey(forProjectId: uuid) {
+                charts = await RevenueCatService.shared.fetchAllCharts(
+                    projectId: project.projectId,
+                    apiKey: apiKey,
+                    currency: currency,
+                    days: period.days
+                )
+            }
+        } else {
+            throw OpenAIError.emptyResponse
+        }
+
+        return try await OpenAIService.shared.generateReport(
+            projectName: projectName,
+            period: period,
+            dashboardData: dashboardData,
+            charts: charts
+        )
     }
 
     // MARK: - Timer

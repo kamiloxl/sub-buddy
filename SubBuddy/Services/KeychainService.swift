@@ -151,6 +151,71 @@ final class KeychainService {
         return true
     }
 
+    // MARK: - OpenAI API Key
+
+    private let openAIKeyAccount = "openai-api-key"
+    private var cachedOpenAIKey: String?
+
+    @discardableResult
+    func saveOpenAIKey(_ key: String) -> Bool {
+        guard let data = key.data(using: .utf8) else { return false }
+
+        deleteFromKeychain(account: openAIKeyAccount)
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: openAIKeyAccount,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+        ]
+
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status == errSecSuccess {
+            logger.info("OpenAI key saved to Keychain")
+            cachedOpenAIKey = key
+            return true
+        }
+
+        logger.warning("Keychain save failed for OpenAI key (status \(status)), using fallback")
+        let saved = saveToFallback(key, filename: ".openai-apikey")
+        if saved { cachedOpenAIKey = key }
+        return saved
+    }
+
+    func getOpenAIKey() -> String? {
+        if let cachedOpenAIKey { return cachedOpenAIKey }
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: openAIKeyAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        if status == errSecSuccess, let data = result as? Data,
+           let key = String(data: data, encoding: .utf8) {
+            cachedOpenAIKey = key
+            return key
+        }
+
+        let fallbackKey = readFromFallback(filename: ".openai-apikey")
+        if let fallbackKey { cachedOpenAIKey = fallbackKey }
+        return fallbackKey
+    }
+
+    @discardableResult
+    func deleteOpenAIKey() -> Bool {
+        cachedOpenAIKey = nil
+        deleteFromKeychain(account: openAIKeyAccount)
+        deleteFallbackFile(filename: ".openai-apikey")
+        return true
+    }
+
     // MARK: - Keychain helpers
 
     private func deleteFromKeychain() {
