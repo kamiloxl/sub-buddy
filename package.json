@@ -1,6 +1,6 @@
 {
   "name": "sub-buddy",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "macOS menu bar app for RevenueCat subscription metrics",
   "author": "Kamil Nowicz",
   "license": "MIT",
