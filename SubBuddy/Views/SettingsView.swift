@@ -8,6 +8,9 @@ struct SettingsView: View {
     @State private var showAPIKey = false
     @State private var openAIKey: String = ""
     @State private var showOpenAIKey = false
+    @State private var appsFlyerAppId: String = ""
+    @State private var appsFlyerToken: String = ""
+    @State private var showAppsFlyerToken = false
     @State private var saveStatus: SaveStatus = .idle
     @State private var projectName: String = ""
     @State private var projectIdText: String = ""
@@ -33,6 +36,7 @@ struct SettingsView: View {
                 // Per-app settings (only when a project tab is selected)
                 if let project = currentProject {
                     projectSection(project)
+                    appsFlyerSection(project)
                 }
 
                 // Actions
@@ -241,6 +245,59 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - AppsFlyer Section
+
+    private func appsFlyerSection(_ project: AppProject) -> some View {
+        settingsSection("AppsFlyer (optional)") {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Connect AppsFlyer to include campaign performance and cohort retention in AI reports and the dashboard.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("App ID")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                TextField("com.myapp.ios", text: $appsFlyerAppId)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("API token (v2)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 6) {
+                    Group {
+                        if showAppsFlyerToken {
+                            TextField("Bearer token...", text: $appsFlyerToken)
+                        } else {
+                            SecureField("Bearer token...", text: $appsFlyerToken)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+
+                    Button {
+                        showAppsFlyerToken.toggle()
+                    } label: {
+                        Image(systemName: showAppsFlyerToken ? "eye.slash" : "eye")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .help(showAppsFlyerToken ? "Hide token" : "Show token")
+                }
+
+                Text("Obtain your V2 API token from the AppsFlyer dashboard under API Access.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
     // MARK: - Section Helper
 
     private func settingsSection<Content: View>(
@@ -273,13 +330,18 @@ struct SettingsView: View {
             apiKey = ""
             projectName = ""
             projectIdText = ""
+            appsFlyerAppId = ""
+            appsFlyerToken = ""
             return
         }
         projectName = project.name
         projectIdText = project.projectId
         selectedColour = project.colour
         apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) ?? ""
+        appsFlyerAppId = project.appsFlyerAppId ?? ""
+        appsFlyerToken = KeychainService.shared.getAppsFlyerToken(forProjectId: project.id) ?? ""
         showAPIKey = false
+        showAppsFlyerToken = false
         saveStatus = .idle
         showDeleteConfirm = false
     }
@@ -297,14 +359,24 @@ struct SettingsView: View {
 
         // Save project settings if a project is selected
         if let project = currentProject {
+            let trimmedAFAppId = appsFlyerAppId.trimmingCharacters(in: .whitespaces)
             let updated = AppProject(
                 id: project.id,
                 name: projectName.trimmingCharacters(in: .whitespaces),
                 projectId: projectIdText.trimmingCharacters(in: .whitespaces),
-                colour: selectedColour
+                colour: selectedColour,
+                appsFlyerAppId: trimmedAFAppId.isEmpty ? nil : trimmedAFAppId
             )
             let trimmedKey = apiKey.trimmingCharacters(in: .whitespaces)
             viewModel.updateProject(updated, apiKey: trimmedKey)
+
+            // Save AppsFlyer token
+            let trimmedAFToken = appsFlyerToken.trimmingCharacters(in: .whitespaces)
+            if trimmedAFToken.isEmpty {
+                KeychainService.shared.deleteAppsFlyerToken(forProjectId: project.id)
+            } else {
+                KeychainService.shared.saveAppsFlyerToken(trimmedAFToken, forProjectId: project.id)
+            }
         }
 
         withAnimation { saveStatus = .saved }

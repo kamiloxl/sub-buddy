@@ -34,6 +34,9 @@ struct MetricsDashboardView: View {
                             if let charts = data.charts {
                                 chartsSection(data: data, charts: charts)
                             }
+                            if let marketing = viewModel.currentMarketingData {
+                                CampaignsSectionView(data: marketing)
+                            }
                         } else if viewModel.isLoading {
                             loadingView
                         } else {

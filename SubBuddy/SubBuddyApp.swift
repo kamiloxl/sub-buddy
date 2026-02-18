@@ -61,6 +61,7 @@ struct MenuBarLabel: View {
 final class DashboardViewModel: ObservableObject {
     @Published var projectDataMap: [UUID: DashboardData] = [:]
     @Published var projectErrors: [UUID: String] = [:]
+    @Published var projectMarketingData: [UUID: AppsFlyerReportData] = [:]
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var showSettings = false
@@ -106,6 +107,12 @@ final class DashboardViewModel: ObservableObject {
             return projectDataMap[uuid]
         }
         return nil
+    }
+
+    /// AppsFlyer marketing data for the currently selected project (nil on total tab)
+    var currentMarketingData: AppsFlyerReportData? {
+        guard let uuid = UUID(uuidString: selectedTab) else { return nil }
+        return projectMarketingData[uuid]
     }
 
     var currentError: String? {
@@ -186,6 +193,7 @@ final class DashboardViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
 
+        // Fetch RevenueCat data
         await withTaskGroup(of: (UUID, Result<DashboardData, Error>).self) { group in
             for project in projects {
                 let pid = project.id
@@ -217,6 +225,36 @@ final class DashboardViewModel: ObservableObject {
                 case .failure(let error):
                     projectErrors[projectId] = error.localizedDescription
                     logger.error("Project \(projectId) failed: \(error.localizedDescription)")
+                }
+            }
+        }
+
+        // Fetch AppsFlyer data for configured projects (last 7 days for dashboard)
+        let afEndDate = Date()
+        let afStartDate = Calendar.current.date(byAdding: .day, value: -7, to: afEndDate) ?? afEndDate
+
+        await withTaskGroup(of: (UUID, AppsFlyerReportData?).self) { group in
+            for project in projects {
+                guard let appId = project.appsFlyerAppId, !appId.isEmpty,
+                      let token = KeychainService.shared.getAppsFlyerToken(forProjectId: project.id) else {
+                    continue
+                }
+                let pid = project.id
+                group.addTask {
+                    let data = await AppsFlyerService.shared.fetchMarketingData(
+                        appId: appId,
+                        token: token,
+                        currency: currency,
+                        startDate: afStartDate,
+                        endDate: afEndDate
+                    )
+                    return (pid, data)
+                }
+            }
+
+            for await (projectId, data) in group {
+                if let data {
+                    projectMarketingData[projectId] = data
                 }
             }
         }
@@ -353,12 +391,36 @@ final class DashboardViewModel: ObservableObject {
             }
         }
 
+        // Fetch AppsFlyer data if configured for the selected project
+        var currentMarketingReport: AppsFlyerReportData?
+        var previousMarketingReport: AppsFlyerReportData?
+
+        if selectedTab != "total",
+           let uuid = UUID(uuidString: selectedTab),
+           let project = settings.projects.first(where: { $0.id == uuid }),
+           let appId = project.appsFlyerAppId, !appId.isEmpty,
+           let afToken = KeychainService.shared.getAppsFlyerToken(forProjectId: uuid) {
+            await MainActor.run { reportProgress = "Fetching marketing data..." }
+
+            async let curAF = AppsFlyerService.shared.fetchMarketingData(
+                appId: appId, token: afToken, currency: currency,
+                startDate: startDate, endDate: endDate
+            )
+            async let prevAF = AppsFlyerService.shared.fetchMarketingData(
+                appId: appId, token: afToken, currency: currency,
+                startDate: previousStart, endDate: previousEnd
+            )
+            (currentMarketingReport, previousMarketingReport) = await (curAF, prevAF)
+        }
+
         return try await OpenAIService.shared.generateReportWithAgentLoop(
             projectName: projectName,
             dateRange: startDate...endDate,
             currentData: dashboardData,
             currentCharts: currentCharts,
             previousCharts: previousCharts,
+            currentMarketingData: currentMarketingReport,
+            previousMarketingData: previousMarketingReport,
             onProgress: onProgress
         )
     }

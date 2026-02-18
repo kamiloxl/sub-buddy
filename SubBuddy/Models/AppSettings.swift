@@ -33,16 +33,23 @@ struct AppProject: Codable, Identifiable, Equatable {
     var name: String
     var projectId: String
     var colour: ProjectColour
+    var appsFlyerAppId: String?
 
-    init(id: UUID = UUID(), name: String, projectId: String, colour: ProjectColour = .blue) {
+    init(id: UUID = UUID(), name: String, projectId: String, colour: ProjectColour = .blue, appsFlyerAppId: String? = nil) {
         self.id = id
         self.name = name
         self.projectId = projectId
         self.colour = colour
+        self.appsFlyerAppId = appsFlyerAppId
+    }
+
+    var isAppsFlyerConfigured: Bool {
+        guard let appId = appsFlyerAppId, !appId.isEmpty else { return false }
+        return KeychainService.shared.getAppsFlyerToken(forProjectId: id) != nil
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, projectId, colour
+        case id, name, projectId, colour, appsFlyerAppId
     }
 
     init(from decoder: Decoder) throws {
@@ -51,6 +58,7 @@ struct AppProject: Codable, Identifiable, Equatable {
         name = try container.decode(String.self, forKey: .name)
         projectId = try container.decode(String.self, forKey: .projectId)
         colour = (try? container.decode(ProjectColour.self, forKey: .colour)) ?? .blue
+        appsFlyerAppId = try? container.decode(String.self, forKey: .appsFlyerAppId)
     }
 }
 

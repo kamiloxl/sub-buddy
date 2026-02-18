@@ -216,6 +216,73 @@ final class KeychainService {
         return true
     }
 
+    // MARK: - AppsFlyer API Token (per project)
+
+    private var cachedAppsFlyerTokens: [UUID: String] = [:]
+
+    @discardableResult
+    func saveAppsFlyerToken(_ token: String, forProjectId id: UUID) -> Bool {
+        guard let data = token.data(using: .utf8) else { return false }
+
+        let account = "appsflyer-api-token-\(id.uuidString)"
+        deleteFromKeychain(account: account)
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+        ]
+
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status == errSecSuccess {
+            logger.info("AppsFlyer token saved to Keychain for project \(id.uuidString)")
+            cachedAppsFlyerTokens[id] = token
+            return true
+        }
+
+        logger.warning("Keychain save failed for AppsFlyer token (status \(status)), using fallback")
+        let saved = saveToFallback(token, filename: ".af-token-\(id.uuidString)")
+        if saved { cachedAppsFlyerTokens[id] = token }
+        return saved
+    }
+
+    func getAppsFlyerToken(forProjectId id: UUID) -> String? {
+        if let cached = cachedAppsFlyerTokens[id] { return cached }
+
+        let account = "appsflyer-api-token-\(id.uuidString)"
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        if status == errSecSuccess, let data = result as? Data,
+           let token = String(data: data, encoding: .utf8) {
+            cachedAppsFlyerTokens[id] = token
+            return token
+        }
+
+        let fallbackToken = readFromFallback(filename: ".af-token-\(id.uuidString)")
+        if let fallbackToken { cachedAppsFlyerTokens[id] = fallbackToken }
+        return fallbackToken
+    }
+
+    @discardableResult
+    func deleteAppsFlyerToken(forProjectId id: UUID) -> Bool {
+        cachedAppsFlyerTokens.removeValue(forKey: id)
+        let account = "appsflyer-api-token-\(id.uuidString)"
+        deleteFromKeychain(account: account)
+        deleteFallbackFile(filename: ".af-token-\(id.uuidString)")
+        return true
+    }
+
     // MARK: - Keychain helpers
 
     private func deleteFromKeychain() {
