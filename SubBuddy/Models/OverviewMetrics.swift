@@ -149,3 +149,25 @@ struct DashboardCharts {
     var revenueTrend: [ChartDataPoint] = []
     var trialConversions: [ChartDataPoint] = []
 }
+
+// MARK: - Report Charts (extended for AI reports)
+
+struct ReportCharts {
+    var mrrTrend: [ChartDataPoint] = []
+    var subscriberGrowth: [ChartDataPoint] = []
+    var revenueTrend: [ChartDataPoint] = []
+    var trialConversions: [ChartDataPoint] = []
+    var activesMovement: [ChartDataPoint] = []
+
+    var estimatedChurnRate: Double? {
+        let movementValues = activesMovement.compactMap(\.value)
+        let subsValues = subscriberGrowth.compactMap(\.value)
+        guard !movementValues.isEmpty, let avgSubs = subsValues.first, avgSubs > 0 else {
+            return nil
+        }
+        let negativeMovement = movementValues.filter { $0 < 0 }.map { abs($0) }
+        guard !negativeMovement.isEmpty else { return nil }
+        let totalChurned = negativeMovement.reduce(0, +)
+        return (totalChurned / avgSubs) * 100
+    }
+}

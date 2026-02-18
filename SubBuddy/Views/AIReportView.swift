@@ -4,7 +4,8 @@ import AppKit
 struct AIReportView: View {
     @ObservedObject var viewModel: DashboardViewModel
 
-    @State private var selectedPeriod: ReportPeriod = .week
+    @State private var startDate = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
+    @State private var endDate = Date()
     @State private var reportText: String = ""
     @State private var isGenerating = false
     @State private var errorMessage: String?
@@ -15,31 +16,14 @@ struct AIReportView: View {
         return !key.isEmpty
     }
 
+    private var isDateRangeValid: Bool {
+        endDate >= startDate && startDate <= Date()
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                // Title
-                HStack {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.purple)
-
-                    Text("AI report")
-                        .font(.system(size: 13, weight: .semibold))
-
-                    Spacer()
-
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            viewModel.showAIReport = false
-                        }
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
+                headerRow
 
                 if !hasOpenAIKey {
                     noKeyView
@@ -56,6 +40,32 @@ struct AIReportView: View {
                 }
             }
             .padding(12)
+        }
+    }
+
+    // MARK: - Header
+
+    private var headerRow: some View {
+        HStack {
+            Image(systemName: "sparkles")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.purple)
+
+            Text("AI report")
+                .font(.system(size: 13, weight: .semibold))
+
+            Spacer()
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.showAIReport = false
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -92,18 +102,44 @@ struct AIReportView: View {
 
     private var controlsView: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Date range pickers
             HStack {
-                Text("Period")
-                    .font(.system(size: 12))
+                Text("From")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, alignment: .leading)
 
-                Spacer()
+                DatePicker(
+                    "",
+                    selection: $startDate,
+                    in: ...Date(),
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.compact)
+                .labelsHidden()
+            }
 
-                Picker("", selection: $selectedPeriod) {
-                    ForEach(ReportPeriod.allCases) { period in
-                        Text(period.label).tag(period)
-                    }
-                }
-                .frame(width: 140)
+            HStack {
+                Text("To")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, alignment: .leading)
+
+                DatePicker(
+                    "",
+                    selection: $endDate,
+                    in: ...Date(),
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.compact)
+                .labelsHidden()
+            }
+
+            // Quick shortcuts
+            HStack(spacing: 6) {
+                shortcutButton("7 days", days: 7)
+                shortcutButton("30 days", days: 30)
+                shortcutButton("90 days", days: 90)
             }
 
             Button {
@@ -119,13 +155,30 @@ struct AIReportView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(isGenerating)
+            .disabled(isGenerating || !isDateRangeValid)
         }
         .padding(10)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(.quaternary.opacity(0.5))
         }
+    }
+
+    private func shortcutButton(_ label: String, days: Int) -> some View {
+        let target = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
+        let isActive = Calendar.current.isDate(startDate, inSameDayAs: target)
+            && Calendar.current.isDate(endDate, inSameDayAs: Date())
+
+        return Button(label) {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                startDate = target
+                endDate = Date()
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .font(.system(size: 10))
+        .foregroundStyle(isActive ? .purple : .primary)
     }
 
     // MARK: - Loading
@@ -135,9 +188,11 @@ struct AIReportView: View {
             ProgressView()
                 .scaleEffect(0.8)
 
-            Text("Generating report...")
+            Text(viewModel.reportProgress.isEmpty ? "Preparing..." : viewModel.reportProgress)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .animation(.easeInOut(duration: 0.2), value: viewModel.reportProgress)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 20)
@@ -174,6 +229,12 @@ struct AIReportView: View {
                 Text("Report")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
+
+                if !viewModel.reportProgress.isEmpty {
+                    Text("(\(viewModel.reportProgress))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
 
                 Spacer()
 
@@ -215,7 +276,10 @@ struct AIReportView: View {
 
         Task {
             do {
-                let report = try await viewModel.generateReport(period: selectedPeriod)
+                let report = try await viewModel.generateReport(
+                    startDate: startDate,
+                    endDate: endDate
+                )
                 await MainActor.run {
                     reportText = report
                     isGenerating = false

@@ -249,6 +249,57 @@ final class RevenueCatService {
         )
     }
 
+    // MARK: - Date-range Chart Series (for AI reports)
+
+    func fetchChartSeriesForRange(
+        projectId: String,
+        apiKey: String,
+        chartName: ChartName,
+        currency: String,
+        startDate: Date,
+        endDate: Date
+    ) async -> [ChartDataPoint] {
+        let formatter = ISO8601DateFormatter.chartDateFormatter
+        let startStr = formatter.string(from: startDate)
+        let endStr = formatter.string(from: endDate)
+
+        let urlString = "\(baseURL)/projects/\(projectId)/charts/\(chartName.rawValue)"
+            + "?start_date=\(startStr)&end_date=\(endStr)&currency=\(currency)&resolution=0"
+
+        do {
+            let chart: ChartResponse = try await performRequest(urlString: urlString, apiKey: apiKey)
+            logger.info("Chart range \(chartName.rawValue): \(chart.values.count) points (\(startStr)..\(endStr))")
+            return chart.values
+        } catch {
+            logger.error("Chart range \(chartName.rawValue) fetch failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    func fetchReportCharts(
+        projectId: String,
+        apiKey: String,
+        currency: String,
+        startDate: Date,
+        endDate: Date
+    ) async -> ReportCharts {
+        async let mrrData = fetchChartSeriesForRange(projectId: projectId, apiKey: apiKey, chartName: .mrr, currency: currency, startDate: startDate, endDate: endDate)
+        async let subsData = fetchChartSeriesForRange(projectId: projectId, apiKey: apiKey, chartName: .actives, currency: currency, startDate: startDate, endDate: endDate)
+        async let revenueData = fetchChartSeriesForRange(projectId: projectId, apiKey: apiKey, chartName: .revenue, currency: currency, startDate: startDate, endDate: endDate)
+        async let trialsData = fetchChartSeriesForRange(projectId: projectId, apiKey: apiKey, chartName: .trialConversion, currency: currency, startDate: startDate, endDate: endDate)
+        async let movementData = fetchChartSeriesForRange(projectId: projectId, apiKey: apiKey, chartName: .activesMovement, currency: currency, startDate: startDate, endDate: endDate)
+
+        let (mrr, subs, revenue, trials, movement) = await (mrrData, subsData, revenueData, trialsData, movementData)
+
+        return ReportCharts(
+            mrrTrend: mrr,
+            subscriberGrowth: subs,
+            revenueTrend: revenue,
+            trialConversions: trials,
+            activesMovement: movement
+        )
+    }
+
     // MARK: - Network Layer
 
     private func performRequest<T: Decodable>(urlString: String, apiKey: String) async throws -> T {

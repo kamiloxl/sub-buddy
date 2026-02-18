@@ -274,14 +274,17 @@ final class DashboardViewModel: ObservableObject {
 
     // MARK: - AI Report
 
-    func generateReport(period: ReportPeriod) async throws -> String {
+    @Published var reportProgress: String = ""
+
+    func generateReport(
+        startDate: Date,
+        endDate: Date
+    ) async throws -> String {
         let projects = settings.projects
         let currency = settings.currency
 
-        // Determine project name and data source
         let projectName: String
         let dashboardData: DashboardData
-        var charts: DashboardCharts?
 
         if selectedTab == "total" {
             projectName = "All projects"
@@ -289,51 +292,87 @@ final class DashboardViewModel: ObservableObject {
                 throw OpenAIError.emptyResponse
             }
             dashboardData = total
-
-            // Fetch charts for the selected period across all projects
-            var allCharts: [DashboardCharts] = []
-            for project in projects {
-                guard let apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) else { continue }
-                let projectCharts = await RevenueCatService.shared.fetchAllCharts(
-                    projectId: project.projectId,
-                    apiKey: apiKey,
-                    currency: currency,
-                    days: period.days
-                )
-                allCharts.append(projectCharts)
-            }
-
-            if !allCharts.isEmpty {
-                charts = DashboardCharts(
-                    mrrTrend: mergeChartPoints(allCharts.map(\.mrrTrend)),
-                    subscriberGrowth: mergeChartPoints(allCharts.map(\.subscriberGrowth)),
-                    revenueTrend: mergeChartPoints(allCharts.map(\.revenueTrend)),
-                    trialConversions: mergeChartPoints(allCharts.map(\.trialConversions))
-                )
-            }
         } else if let uuid = UUID(uuidString: selectedTab),
                   let project = projects.first(where: { $0.id == uuid }),
                   let data = projectDataMap[uuid] {
             projectName = project.name
             dashboardData = data
-
-            if let apiKey = KeychainService.shared.getAPIKey(forProjectId: uuid) {
-                charts = await RevenueCatService.shared.fetchAllCharts(
-                    projectId: project.projectId,
-                    apiKey: apiKey,
-                    currency: currency,
-                    days: period.days
-                )
-            }
         } else {
             throw OpenAIError.emptyResponse
         }
 
-        return try await OpenAIService.shared.generateReport(
+        await MainActor.run { reportProgress = "Fetching data..." }
+
+        let duration = Calendar.current.dateComponents([.day], from: startDate, to: endDate).day ?? 30
+        let previousEnd = Calendar.current.date(byAdding: .day, value: -1, to: startDate)!
+        let previousStart = Calendar.current.date(byAdding: .day, value: -duration, to: previousEnd)!
+
+        let currentCharts: ReportCharts
+        let previousCharts: ReportCharts
+
+        if selectedTab == "total" {
+            var allCurrent: [ReportCharts] = []
+            var allPrevious: [ReportCharts] = []
+
+            for project in projects {
+                guard let apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) else { continue }
+                async let cur = RevenueCatService.shared.fetchReportCharts(
+                    projectId: project.projectId, apiKey: apiKey,
+                    currency: currency, startDate: startDate, endDate: endDate
+                )
+                async let prev = RevenueCatService.shared.fetchReportCharts(
+                    projectId: project.projectId, apiKey: apiKey,
+                    currency: currency, startDate: previousStart, endDate: previousEnd
+                )
+                let (c, p) = await (cur, prev)
+                allCurrent.append(c)
+                allPrevious.append(p)
+            }
+
+            currentCharts = mergeReportCharts(allCurrent)
+            previousCharts = mergeReportCharts(allPrevious)
+        } else if let uuid = UUID(uuidString: selectedTab),
+                  let project = projects.first(where: { $0.id == uuid }),
+                  let apiKey = KeychainService.shared.getAPIKey(forProjectId: uuid) {
+            async let cur = RevenueCatService.shared.fetchReportCharts(
+                projectId: project.projectId, apiKey: apiKey,
+                currency: currency, startDate: startDate, endDate: endDate
+            )
+            async let prev = RevenueCatService.shared.fetchReportCharts(
+                projectId: project.projectId, apiKey: apiKey,
+                currency: currency, startDate: previousStart, endDate: previousEnd
+            )
+            (currentCharts, previousCharts) = await (cur, prev)
+        } else {
+            throw OpenAIError.emptyResponse
+        }
+
+        let onProgress: @Sendable (String) -> Void = { [weak self] message in
+            Task { @MainActor in
+                self?.reportProgress = message
+            }
+        }
+
+        return try await OpenAIService.shared.generateReportWithAgentLoop(
             projectName: projectName,
-            period: period,
-            dashboardData: dashboardData,
-            charts: charts
+            dateRange: startDate...endDate,
+            currentData: dashboardData,
+            currentCharts: currentCharts,
+            previousCharts: previousCharts,
+            onProgress: onProgress
+        )
+    }
+
+    private func mergeReportCharts(_ charts: [ReportCharts]) -> ReportCharts {
+        guard !charts.isEmpty else { return ReportCharts() }
+        guard charts.count > 1 else { return charts[0] }
+
+        return ReportCharts(
+            mrrTrend: mergeChartPoints(charts.map(\.mrrTrend)),
+            subscriberGrowth: mergeChartPoints(charts.map(\.subscriberGrowth)),
+            revenueTrend: mergeChartPoints(charts.map(\.revenueTrend)),
+            trialConversions: mergeChartPoints(charts.map(\.trialConversions)),
+            activesMovement: mergeChartPoints(charts.map(\.activesMovement))
         )
     }
 
