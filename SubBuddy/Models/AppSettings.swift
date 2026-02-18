@@ -33,23 +33,32 @@ struct AppProject: Codable, Identifiable, Equatable {
     var name: String
     var projectId: String
     var colour: ProjectColour
-    var appsFlyerAppId: String?
+    /// One entry per platform (e.g. iOS bundle ID + Android package name).
+    /// Empty array = AppsFlyer not configured for this project.
+    var appsFlyerAppIds: [String]
 
-    init(id: UUID = UUID(), name: String, projectId: String, colour: ProjectColour = .blue, appsFlyerAppId: String? = nil) {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        projectId: String,
+        colour: ProjectColour = .blue,
+        appsFlyerAppIds: [String] = []
+    ) {
         self.id = id
         self.name = name
         self.projectId = projectId
         self.colour = colour
-        self.appsFlyerAppId = appsFlyerAppId
+        self.appsFlyerAppIds = appsFlyerAppIds
     }
 
     var isAppsFlyerConfigured: Bool {
-        guard let appId = appsFlyerAppId, !appId.isEmpty else { return false }
+        let nonEmpty = appsFlyerAppIds.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !nonEmpty.isEmpty else { return false }
         return KeychainService.shared.getAppsFlyerToken(forProjectId: id) != nil
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, projectId, colour, appsFlyerAppId
+        case id, name, projectId, colour, appsFlyerAppIds, appsFlyerAppId
     }
 
     init(from decoder: Decoder) throws {
@@ -58,7 +67,24 @@ struct AppProject: Codable, Identifiable, Equatable {
         name = try container.decode(String.self, forKey: .name)
         projectId = try container.decode(String.self, forKey: .projectId)
         colour = (try? container.decode(ProjectColour.self, forKey: .colour)) ?? .blue
-        appsFlyerAppId = try? container.decode(String.self, forKey: .appsFlyerAppId)
+
+        // Migrate old single-value field to array
+        if let ids = try? container.decode([String].self, forKey: .appsFlyerAppIds) {
+            appsFlyerAppIds = ids
+        } else if let single = try? container.decode(String.self, forKey: .appsFlyerAppId), !single.isEmpty {
+            appsFlyerAppIds = [single]
+        } else {
+            appsFlyerAppIds = []
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(projectId, forKey: .projectId)
+        try container.encode(colour, forKey: .colour)
+        try container.encode(appsFlyerAppIds, forKey: .appsFlyerAppIds)
     }
 }
 

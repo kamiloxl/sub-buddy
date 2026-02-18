@@ -48,9 +48,26 @@ struct CampaignDayRow: Identifiable {
     let cost: Double
     let revenue: Double
 
+    // In-app funnel events (from attributed installs)
+    let trialsStarted: Int       // af_start_trial
+    let subscriptions: Int       // af_subscribe
+    let paywallViews: Int        // paywall_viewed
+    let paywallDismissals: Int   // paywall_dismissed
+    let registrations: Int       // af_complete_registration
+
     var cpi: Double {
         guard installs > 0 else { return 0 }
         return cost / Double(installs)
+    }
+
+    var trialStartRate: Double? {
+        guard installs > 0 else { return nil }
+        return Double(trialsStarted) / Double(installs)
+    }
+
+    var paywallConversionRate: Double? {
+        guard paywallViews > 0 else { return nil }
+        return Double(subscriptions) / Double(paywallViews)
     }
 }
 
@@ -72,18 +89,9 @@ struct AppsFlyerReportData {
     var cohorts: [CohortData]
     var currency: String
 
-    var totalInstalls: Int {
-        Set(campaignRows.map { "\($0.date)-\($0.mediaSource)-\($0.campaign)" })
-            .isEmpty ? 0 : campaignRows.reduce(0) { $0 + $1.installs }
-    }
-
-    var totalCost: Double {
-        campaignRows.reduce(0) { $0 + $1.cost }
-    }
-
-    var totalRevenue: Double {
-        campaignRows.reduce(0) { $0 + $1.revenue }
-    }
+    var totalInstalls: Int { campaignRows.reduce(0) { $0 + $1.installs } }
+    var totalCost: Double { campaignRows.reduce(0) { $0 + $1.cost } }
+    var totalRevenue: Double { campaignRows.reduce(0) { $0 + $1.revenue } }
 
     var averageCPI: Double {
         guard totalInstalls > 0 else { return 0 }
@@ -95,7 +103,28 @@ struct AppsFlyerReportData {
         return (totalRevenue / totalCost) * 100
     }
 
-    // Aggregate by campaign name (sum across dates)
+    // Funnel aggregates
+    var totalTrialsStarted: Int { campaignRows.reduce(0) { $0 + $1.trialsStarted } }
+    var totalAttributedSubscriptions: Int { campaignRows.reduce(0) { $0 + $1.subscriptions } }
+    var totalPaywallViews: Int { campaignRows.reduce(0) { $0 + $1.paywallViews } }
+    var totalPaywallDismissals: Int { campaignRows.reduce(0) { $0 + $1.paywallDismissals } }
+    var totalRegistrations: Int { campaignRows.reduce(0) { $0 + $1.registrations } }
+
+    var trialStartRate: Double? {
+        guard totalInstalls > 0, totalTrialsStarted > 0 else { return nil }
+        return Double(totalTrialsStarted) / Double(totalInstalls)
+    }
+
+    var paywallConversionRate: Double? {
+        guard totalPaywallViews > 0 else { return nil }
+        return Double(totalAttributedSubscriptions) / Double(totalPaywallViews)
+    }
+
+    var hasFunnelData: Bool {
+        totalTrialsStarted > 0 || totalPaywallViews > 0 || totalAttributedSubscriptions > 0
+    }
+
+    // Aggregate by campaign (sum across dates)
     var campaignTotals: [CampaignTotal] {
         var map: [String: CampaignTotal] = [:]
         for row in campaignRows {
@@ -106,6 +135,9 @@ struct AppsFlyerReportData {
                 existing.revenue += row.revenue
                 existing.impressions += row.impressions
                 existing.clicks += row.clicks
+                existing.trialsStarted += row.trialsStarted
+                existing.subscriptions += row.subscriptions
+                existing.paywallViews += row.paywallViews
                 map[key] = existing
             } else {
                 map[key] = CampaignTotal(
@@ -115,7 +147,10 @@ struct AppsFlyerReportData {
                     clicks: row.clicks,
                     installs: row.installs,
                     cost: row.cost,
-                    revenue: row.revenue
+                    revenue: row.revenue,
+                    trialsStarted: row.trialsStarted,
+                    subscriptions: row.subscriptions,
+                    paywallViews: row.paywallViews
                 )
             }
         }
@@ -136,6 +171,9 @@ struct CampaignTotal: Identifiable {
     var installs: Int
     var cost: Double
     var revenue: Double
+    var trialsStarted: Int
+    var subscriptions: Int
+    var paywallViews: Int
 
     var cpi: Double {
         guard installs > 0 else { return 0 }
@@ -145,6 +183,16 @@ struct CampaignTotal: Identifiable {
     var roas: Double {
         guard cost > 0 else { return 0 }
         return (revenue / cost) * 100
+    }
+
+    var trialStartRate: Double? {
+        guard installs > 0, trialsStarted > 0 else { return nil }
+        return Double(trialsStarted) / Double(installs)
+    }
+
+    var paywallConversionRate: Double? {
+        guard paywallViews > 0, subscriptions > 0 else { return nil }
+        return Double(subscriptions) / Double(paywallViews)
     }
 
     var displayName: String {
@@ -214,22 +262,109 @@ final class AppsFlyerService {
         self.session = URLSession(configuration: config)
     }
 
+    // MARK: - Token Normalisation
+
+    /// Strips an accidental "Bearer " prefix if the user pasted the full header value.
+    private func normaliseToken(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespaces)
+        if t.lowercased().hasPrefix("bearer ") {
+            t = String(t.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+        }
+        return t
+    }
+
+    // MARK: - Connection Test
+
+    enum TestResult {
+        case success(appId: String, rows: Int)
+        case authError
+        case notFound(appId: String)
+        case networkError(String)
+        case unknownError(Int, String)
+    }
+
+    /// Quick validation call — uses Pull API with a 3-day window. Does NOT persist data.
+    func testConnection(appId: String, token: String) async -> TestResult {
+        let tok = normaliseToken(token)
+        let fmt = ISO8601DateFormatter.chartDateFormatter
+        let to = fmt.string(from: Date())
+        let from = fmt.string(from: Calendar.current.date(byAdding: .day, value: -3, to: Date()) ?? Date())
+
+        let urlString = "\(pullBaseURL)/\(appId)/partners_by_date_report/v5?from=\(from)&to=\(to)&currency=USD&timezone=UTC"
+        guard let url = URL(string: urlString) else { return .networkError("Invalid URL") }
+
+        appLog("Testing AppsFlyer connection for app_id=\(appId)…", level: .info, category: "AppsFlyer")
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return .networkError("No HTTP response") }
+
+            appLog("Test connection ← \(http.statusCode) (\(data.count) bytes)", level: http.statusCode == 200 ? .info : .warning, category: "AppsFlyer")
+
+            switch http.statusCode {
+            case 200:
+                let csv = String(data: data, encoding: .utf8) ?? ""
+                let rows = parseCSV(csv)
+                appLog("Test OK — \(rows.count) rows in last 3 days", category: "AppsFlyer")
+                return .success(appId: appId, rows: rows.count)
+            case 401, 403:
+                let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
+                appLog("Test FAILED — auth error: \(body)", level: .error, category: "AppsFlyer")
+                return .authError
+            case 404:
+                appLog("Test FAILED — app_id not found or no access: \(appId)", level: .error, category: "AppsFlyer")
+                return .notFound(appId: appId)
+            default:
+                let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
+                appLog("Test FAILED — HTTP \(http.statusCode): \(body)", level: .error, category: "AppsFlyer")
+                return .unknownError(http.statusCode, body)
+            }
+        } catch {
+            appLog("Test FAILED — network: \(error.localizedDescription)", level: .error, category: "AppsFlyer")
+            return .networkError(error.localizedDescription)
+        }
+    }
+
     // MARK: - Public
 
+    /// Fetches and merges marketing data for all platform app IDs belonging to one project.
     func fetchMarketingData(
-        appId: String,
+        appIds: [String],
         token: String,
         currency: String,
         startDate: Date,
         endDate: Date
     ) async -> AppsFlyerReportData {
-        async let campaignRows = fetchCampaignRows(appId: appId, token: token, currency: currency, startDate: startDate, endDate: endDate)
-        async let cohorts = fetchCohorts(appId: appId, token: token, currency: currency, startDate: startDate, endDate: endDate)
+        let tok = normaliseToken(token)
+        let nonEmpty = appIds.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !nonEmpty.isEmpty else {
+            return AppsFlyerReportData(campaignRows: [], cohorts: [], currency: currency)
+        }
 
-        let (rows, cohortData) = await (campaignRows, cohorts)
+        var allRows: [CampaignDayRow] = []
+        var allCohorts: [CohortData] = []
 
-        logger.info("AF data fetched — \(rows.count) campaign rows, \(cohortData.count) cohorts")
-        return AppsFlyerReportData(campaignRows: rows, cohorts: cohortData, currency: currency)
+        await withTaskGroup(of: (rows: [CampaignDayRow], cohorts: [CohortData]).self) { group in
+            for appId in nonEmpty {
+                group.addTask {
+                    async let rows = self.fetchCampaignRows(appId: appId, token: tok, currency: currency, startDate: startDate, endDate: endDate)
+                    async let cohorts = self.fetchCohorts(appId: appId, token: tok, currency: currency, startDate: startDate, endDate: endDate)
+                    return await (rows, cohorts)
+                }
+            }
+
+            for await result in group {
+                allRows.append(contentsOf: result.rows)
+                allCohorts.append(contentsOf: result.cohorts)
+            }
+        }
+
+        appLog("Fetched \(allRows.count) campaign rows and \(allCohorts.count) cohorts for \(nonEmpty.count) platform(s)", category: "AppsFlyer")
+        return AppsFlyerReportData(campaignRows: allRows, cohorts: allCohorts, currency: currency)
     }
 
     // MARK: - Pull API (partners_by_date_report)
@@ -248,9 +383,11 @@ final class AppsFlyerService {
         let urlString = "\(pullBaseURL)/\(appId)/partners_by_date_report/v5?from=\(from)&to=\(to)&currency=\(currency)&timezone=UTC"
 
         guard let url = URL(string: urlString) else {
-            logger.error("Invalid Pull API URL: \(urlString)")
+            appLog("Invalid Pull API URL: \(urlString)", level: .error, category: "AppsFlyer")
             return []
         }
+
+        appLog("Pull API → GET \(urlString)", level: .debug, category: "AppsFlyer")
 
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -259,18 +396,18 @@ final class AppsFlyerService {
             let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else { return [] }
 
-            logger.debug("Pull API response: \(httpResponse.statusCode)")
+            appLog("Pull API ← \(httpResponse.statusCode) (\(data.count) bytes) app_id=\(appId)", level: httpResponse.statusCode == 200 ? .info : .error, category: "AppsFlyer")
 
             guard httpResponse.statusCode == 200 else {
-                let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
-                logger.error("Pull API error \(httpResponse.statusCode): \(body)")
+                let body = String(data: data.prefix(300), encoding: .utf8) ?? "(no body)"
+                appLog("Pull API error body: \(body)", level: .error, category: "AppsFlyer")
                 return []
             }
 
             let csv = String(data: data, encoding: .utf8) ?? ""
             return parseCSV(csv)
         } catch {
-            logger.error("Pull API network error: \(error.localizedDescription)")
+            appLog("Pull API network error: \(error.localizedDescription)", level: .error, category: "AppsFlyer")
             return []
         }
     }
@@ -284,26 +421,58 @@ final class AppsFlyerService {
         let headerLine = lines.removeFirst()
         let headers = parseCSVLine(headerLine)
 
-        // Map column names to indices (AppsFlyer CSV headers vary slightly)
+        appLog("CSV headers: \(headers.joined(separator: " | "))", level: .debug, category: "AppsFlyer")
+
+        // Match column index — first try exact match, then "starts with / contains" fallback.
+        // AppsFlyer appends extra info to headers, e.g. "Media Source (pid)", "Campaign (c)".
         func idx(_ candidates: [String]) -> Int? {
+            let normalised = headers.map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+            // 1. Exact match
             for candidate in candidates {
-                if let i = headers.firstIndex(where: { $0.lowercased().trimmingCharacters(in: .whitespaces) == candidate.lowercased() }) {
-                    return i
-                }
+                if let i = normalised.firstIndex(of: candidate.lowercased()) { return i }
+            }
+            // 2. Header starts with candidate
+            for candidate in candidates {
+                let lower = candidate.lowercased()
+                if let i = normalised.firstIndex(where: { $0.hasPrefix(lower) }) { return i }
+            }
+            // 3. Header contains candidate anywhere
+            for candidate in candidates {
+                let lower = candidate.lowercased()
+                if let i = normalised.firstIndex(where: { $0.contains(lower) }) { return i }
             }
             return nil
         }
 
-        let dateIdx = idx(["date", "day"])
-        let mediaIdx = idx(["media source", "media_source", "partner"])
-        let campaignIdx = idx(["campaign", "campaign name"])
-        let impressionsIdx = idx(["impressions"])
-        let clicksIdx = idx(["clicks"])
-        let installsIdx = idx(["installs"])
-        let costIdx = idx(["cost", "total cost"])
-        let revenueIdx = idx(["revenue", "total revenue"])
+        // Match a column whose header contains ALL of the given keywords.
+        // Used to distinguish e.g. "af_start_trial (Unique users)" from "af_start_trial (Event counter)".
+        func idxContainingAll(_ keywords: [String]) -> Int? {
+            let normalised = headers.map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+            return normalised.firstIndex(where: { header in
+                keywords.allSatisfy { header.contains($0.lowercased()) }
+            })
+        }
 
-        logger.debug("CSV headers: \(headers.joined(separator: ", "))")
+        let dateIdx        = idx(["date", "day"])
+        let mediaIdx       = idx(["media source", "media_source", "partner"])
+        let campaignIdx    = idx(["campaign"])
+        let impressionsIdx = idx(["impressions"])
+        let clicksIdx      = idx(["clicks"])
+        let installsIdx    = idx(["installs"])
+        let costIdx        = idx(["total cost", "cost"])
+        let revenueIdx     = idx(["total revenue", "revenue"])
+
+        // In-app funnel events — "Unique users" variant of each event
+        let trialsIdx        = idxContainingAll(["af_start_trial", "unique users"])
+        let subsIdx          = idxContainingAll(["af_subscribe", "unique users"])
+        let paywallViewIdx   = idxContainingAll(["paywall_viewed", "unique users"])
+        let paywallDismissIdx = idxContainingAll(["paywall_dismissed", "unique users"])
+        let regIdx           = idxContainingAll(["af_complete_registration", "unique users"])
+
+        appLog(
+            "Column map → date:\(dateIdx ?? -1) media:\(mediaIdx ?? -1) campaign:\(campaignIdx ?? -1) installs:\(installsIdx ?? -1) cost:\(costIdx ?? -1) revenue:\(revenueIdx ?? -1) trials:\(trialsIdx ?? -1) subs:\(subsIdx ?? -1) paywall_view:\(paywallViewIdx ?? -1)",
+            level: .debug, category: "AppsFlyer"
+        )
 
         var rows: [CampaignDayRow] = []
 
@@ -316,23 +485,30 @@ final class AppsFlyerService {
                 return cols[i].trimmingCharacters(in: .whitespacesAndNewlines)
             }
 
-            let row = CampaignDayRow(
+            let installs = Int(col(installsIdx)) ?? 0
+            let mediaSource = col(mediaIdx)
+
+            // Keep rows that have either a media source or at least one install
+            guard !mediaSource.isEmpty || installs > 0 else { continue }
+
+            rows.append(CampaignDayRow(
                 date: col(dateIdx),
-                mediaSource: col(mediaIdx),
+                mediaSource: mediaSource.isEmpty ? "Organic" : mediaSource,
                 campaign: col(campaignIdx),
                 impressions: Int(col(impressionsIdx)) ?? 0,
                 clicks: Int(col(clicksIdx)) ?? 0,
-                installs: Int(col(installsIdx)) ?? 0,
+                installs: installs,
                 cost: Double(col(costIdx)) ?? 0,
-                revenue: Double(col(revenueIdx)) ?? 0
-            )
-
-            if !row.mediaSource.isEmpty {
-                rows.append(row)
-            }
+                revenue: Double(col(revenueIdx)) ?? 0,
+                trialsStarted: Int(col(trialsIdx)) ?? 0,
+                subscriptions: Int(col(subsIdx)) ?? 0,
+                paywallViews: Int(col(paywallViewIdx)) ?? 0,
+                paywallDismissals: Int(col(paywallDismissIdx)) ?? 0,
+                registrations: Int(col(regIdx)) ?? 0
+            ))
         }
 
-        logger.info("Parsed \(rows.count) campaign rows from CSV")
+        appLog("Parsed \(rows.count) campaign rows from CSV (out of \(lines.count) data lines)", category: "AppsFlyer")
         return rows
     }
 
@@ -371,9 +547,11 @@ final class AppsFlyerService {
         let urlString = "\(cohortBaseURL)/\(appId)"
 
         guard let url = URL(string: urlString) else {
-            logger.error("Invalid Cohort API URL")
+            appLog("Invalid Cohort API URL: \(urlString)", level: .error, category: "AppsFlyer")
             return []
         }
+
+        appLog("Cohort API → POST \(urlString) from=\(from) to=\(to)", level: .debug, category: "AppsFlyer")
 
         let body: [String: Any] = [
             "cohort_type": "user_acquisition",
@@ -396,7 +574,7 @@ final class AppsFlyerService {
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         } catch {
-            logger.error("Failed to encode cohort request body: \(error.localizedDescription)")
+            appLog("Failed to encode cohort request body: \(error.localizedDescription)", level: .error, category: "AppsFlyer")
             return []
         }
 
@@ -404,17 +582,26 @@ final class AppsFlyerService {
             let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else { return [] }
 
-            logger.debug("Cohort API response: \(httpResponse.statusCode)")
+            let isSuccess = httpResponse.statusCode == 200
+            appLog("Cohort API ← \(httpResponse.statusCode) (\(data.count) bytes) app_id=\(appId)", level: isSuccess ? .info : .error, category: "AppsFlyer")
 
-            guard httpResponse.statusCode == 200 else {
-                let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
-                logger.error("Cohort API error \(httpResponse.statusCode): \(body)")
+            guard isSuccess else {
+                // 404 typically means the Cohort API is not enabled for this AppsFlyer plan,
+                // or the endpoint has changed. Pull API data will still be used.
+                if httpResponse.statusCode == 404 {
+                    appLog("Cohort API not available for app_id=\(appId) — endpoint returned 404. This feature may require an AppsFlyer advanced plan. Pull API data will be used without cohort retention.", level: .warning, category: "AppsFlyer")
+                } else {
+                    let body = String(data: data.prefix(300), encoding: .utf8) ?? "(no body)"
+                    appLog("Cohort API error body: \(body)", level: .error, category: "AppsFlyer")
+                }
                 return []
             }
 
-            return parseCohortResponse(data)
+            let cohorts = parseCohortResponse(data)
+            appLog("Parsed \(cohorts.count) cohort entries", category: "AppsFlyer")
+            return cohorts
         } catch {
-            logger.error("Cohort API network error: \(error.localizedDescription)")
+            appLog("Cohort API network error: \(error.localizedDescription)", level: .error, category: "AppsFlyer")
             return []
         }
     }
@@ -476,7 +663,7 @@ final class AppsFlyerService {
             }
         }
 
-        logger.warning("Could not parse cohort response in any known format")
+        appLog("Could not parse cohort response in any known format — keys: \(json.keys.joined(separator: ", "))", level: .warning, category: "AppsFlyer")
         return []
     }
 }

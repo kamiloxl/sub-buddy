@@ -95,11 +95,14 @@ final class OpenAIService {
             previousMarketing: previousMarketingData
         )
 
+        appLog("Starting agentic report loop for \"\(projectName)\" (\(dateRange.lowerBound.formatted(date: .abbreviated, time: .omitted))–\(dateRange.upperBound.formatted(date: .abbreviated, time: .omitted)))", category: "OpenAI")
+
         var currentDraft = ""
 
         for attempt in 1...maxAttempts {
             // --- Generator ---
             onProgress("Generating draft... (attempt \(attempt)/\(maxAttempts))")
+            appLog("Generator attempt \(attempt)/\(maxAttempts)", level: .debug, category: "OpenAI")
 
             let generatorMessages = buildGeneratorMessages(
                 dataPrompt: dataPrompt,
@@ -113,15 +116,17 @@ final class OpenAIService {
                 temperature: 0.7
             )
 
-            logger.info("Draft \(attempt) generated (\(currentDraft.count) chars)")
+            appLog("Draft \(attempt) generated — \(currentDraft.count) chars", category: "OpenAI")
 
             if attempt == maxAttempts {
+                appLog("Max attempts reached — using final draft", level: .warning, category: "OpenAI")
                 onProgress("Maximum attempts reached — using final draft")
                 break
             }
 
             // --- Critic ---
             onProgress("Quality review... (attempt \(attempt)/\(maxAttempts))")
+            appLog("Critic reviewing draft \(attempt)…", level: .debug, category: "OpenAI")
 
             let criticMessages = buildCriticMessages(
                 dataPrompt: dataPrompt,
@@ -134,13 +139,15 @@ final class OpenAIService {
                 temperature: 0.3
             )
 
-            logger.info("Critic response (attempt \(attempt)): \(criticResponse.prefix(100))")
+            appLog("Critic response: \(criticResponse.prefix(120))", level: .debug, category: "OpenAI")
 
             if criticResponse.uppercased().hasPrefix("APPROVED") {
+                appLog("Report APPROVED on attempt \(attempt)", category: "OpenAI")
                 onProgress("Approved after \(attempt) \(attempt == 1 ? "attempt" : "attempts")")
-                logger.info("Report approved on attempt \(attempt)")
                 return currentDraft
             }
+
+            appLog("Critic NEEDS_REVISION (attempt \(attempt)): \(criticResponse.prefix(200))", level: .warning, category: "OpenAI")
 
             let feedback = criticResponse
                 .replacingOccurrences(of: "NEEDS_REVISION:", with: "")
@@ -178,9 +185,13 @@ final class OpenAIService {
         9. Recommendations — 2-3 specific, actionable next steps
 
         Marketing guidelines (when marketing data is available):
-        - Always state total installs, total spend, average CPI, and ROAS
+        - Always state total installs, total spend, average CPI, and ROAS (if data is present; \
+          if spend is zero or missing, note it explicitly — do not invent numbers)
         - Name specific top campaigns with their installs and CPI
-        - Comment on cohort retention quality (D1, D7, D30) for top campaigns
+        - If in-app funnel data is present (trials started, paywall views, attributed subscriptions), \
+          analyse the acquisition funnel: install → trial start rate → paywall conversion rate
+        - If paywall dismissal rate is high, highlight this as a conversion bottleneck
+        - Comment on cohort retention (D1/D7/D30) if available; if not, note it's unavailable
         - Compare marketing efficiency with the previous period (CPI trend, ROAS trend)
         - Highlight best and worst performing campaigns
 
@@ -339,24 +350,69 @@ final class OpenAIService {
     private func formatMarketingSection(_ data: AppsFlyerReportData, label: String) -> String {
         var section = "MARKETING PERFORMANCE (\(label)):\n"
         section += String(format: "- Total installs: %d\n", data.totalInstalls)
-        section += String(format: "- Total cost: %.2f %@\n", data.totalCost, data.currency)
-        section += String(format: "- Average CPI: %.2f %@\n", data.averageCPI, data.currency)
-        section += String(format: "- Total attributed revenue: %.2f %@\n", data.totalRevenue, data.currency)
-        section += String(format: "- ROAS: %.1f%%\n", data.overallROAS)
+
+        if data.totalCost > 0 {
+            section += String(format: "- Total ad spend: %.2f %@\n", data.totalCost, data.currency)
+            section += String(format: "- Average CPI: %.2f %@\n", data.averageCPI, data.currency)
+        } else {
+            section += "- Total ad spend: not available (organic/untracked traffic only)\n"
+        }
+
+        if data.totalRevenue > 0 {
+            section += String(format: "- Total attributed revenue: %.2f %@\n", data.totalRevenue, data.currency)
+            section += String(format: "- ROAS: %.1f%%\n", data.overallROAS)
+        }
+
+        // In-app funnel events
+        if data.hasFunnelData {
+            section += "\nIn-app funnel (attributed installs):\n"
+            if data.totalRegistrations > 0 {
+                section += String(format: "- Registrations: %d\n", data.totalRegistrations)
+            }
+            if data.totalTrialsStarted > 0 {
+                section += String(format: "- Trials started: %d", data.totalTrialsStarted)
+                if let rate = data.trialStartRate {
+                    section += String(format: " (%.1f%% of installs)", rate * 100)
+                }
+                section += "\n"
+            }
+            if data.totalPaywallViews > 0 {
+                section += String(format: "- Paywall views: %d\n", data.totalPaywallViews)
+            }
+            if data.totalAttributedSubscriptions > 0 {
+                section += String(format: "- Subscriptions (attributed): %d", data.totalAttributedSubscriptions)
+                if let convRate = data.paywallConversionRate {
+                    section += String(format: " (%.1f%% paywall conversion)", convRate * 100)
+                }
+                section += "\n"
+            }
+            if data.totalPaywallViews > 0 && data.totalPaywallViews > data.totalAttributedSubscriptions {
+                let dismissRate = 1.0 - (data.paywallConversionRate ?? 0)
+                section += String(format: "- Paywall dismissal rate: %.1f%%\n", dismissRate * 100)
+            }
+        }
 
         let topCampaigns = data.topCampaigns
         if !topCampaigns.isEmpty {
             section += "\nTop campaigns by installs:\n"
             for (i, campaign) in topCampaigns.prefix(5).enumerated() {
-                section += String(
-                    format: "  %d. %@ — %d installs, %.2f %@ cost, %.2f %@ CPI, ROAS %.1f%%\n",
-                    i + 1,
-                    campaign.displayName,
-                    campaign.installs,
-                    campaign.cost, data.currency,
-                    campaign.cpi, data.currency,
-                    campaign.roas
+                var line = String(
+                    format: "  %d. %@ — %d installs",
+                    i + 1, campaign.displayName, campaign.installs
                 )
+                if campaign.cost > 0 {
+                    line += String(format: ", %.2f %@ spend, CPI %.2f %@", campaign.cost, data.currency, campaign.cpi, data.currency)
+                }
+                if campaign.roas > 0 {
+                    line += String(format: ", ROAS %.1f%%", campaign.roas)
+                }
+                if let trialRate = campaign.trialStartRate {
+                    line += String(format: ", trial rate %.1f%%", trialRate * 100)
+                }
+                if let convRate = campaign.paywallConversionRate {
+                    line += String(format: ", paywall conv. %.1f%%", convRate * 100)
+                }
+                section += line + "\n"
             }
         }
 
@@ -373,6 +429,8 @@ final class OpenAIService {
                     name, cohort.users, cohort.revenue, data.currency, cohort.roi, retStr
                 )
             }
+        } else {
+            section += "\nCohort retention: not available (requires AppsFlyer advanced plan)\n"
         }
 
         return section
@@ -419,13 +477,15 @@ final class OpenAIService {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
-            logger.error("Network error: \(error.localizedDescription)")
+            appLog("OpenAI network error: \(error.localizedDescription)", level: .error, category: "OpenAI")
             throw OpenAIError.networkError(error)
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OpenAIError.serverError(0, nil)
         }
+
+        appLog("OpenAI API ← \(httpResponse.statusCode) (\(data.count) bytes)", level: httpResponse.statusCode == 200 ? .debug : .error, category: "OpenAI")
 
         switch httpResponse.statusCode {
         case 200...299:

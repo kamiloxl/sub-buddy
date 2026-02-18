@@ -8,9 +8,14 @@ struct SettingsView: View {
     @State private var showAPIKey = false
     @State private var openAIKey: String = ""
     @State private var showOpenAIKey = false
-    @State private var appsFlyerAppId: String = ""
+    @State private var appsFlyerAppIds: [String] = []
     @State private var appsFlyerToken: String = ""
     @State private var showAppsFlyerToken = false
+    @State private var afTestStatus: AFTestStatus = .idle
+
+    enum AFTestStatus: Equatable {
+        case idle, testing, success(String), failure(String)
+    }
     @State private var saveStatus: SaveStatus = .idle
     @State private var projectName: String = ""
     @State private var projectIdText: String = ""
@@ -249,20 +254,53 @@ struct SettingsView: View {
 
     private func appsFlyerSection(_ project: AppProject) -> some View {
         settingsSection("AppsFlyer (optional)") {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Connect AppsFlyer to include campaign performance and cohort retention in AI reports and the dashboard.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
+            Text("Add one App ID per platform (iOS bundle ID, Android package name). One API token covers all platforms.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("App ID")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("App IDs")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
 
-                TextField("com.myapp.ios", text: $appsFlyerAppId)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
+                    Spacer()
+
+                    Button {
+                        appsFlyerAppIds.append("")
+                    } label: {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add platform app ID")
+                }
+
+                if appsFlyerAppIds.isEmpty {
+                    Text("No app IDs added yet")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach(appsFlyerAppIds.indices, id: \.self) { index in
+                        HStack(spacing: 6) {
+                            TextField(index == 0 ? "com.myapp.ios" : "com.myapp.android", text: $appsFlyerAppIds[index])
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12, design: .monospaced))
+
+                            Button {
+                                appsFlyerAppIds.remove(at: index)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.red.opacity(0.8))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove this app ID")
+                        }
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -294,6 +332,71 @@ struct SettingsView: View {
                 Text("Obtain your V2 API token from the AppsFlyer dashboard under API Access.")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
+            }
+
+            // Test connection button + status
+            HStack(spacing: 8) {
+                Button {
+                    runConnectionTest()
+                } label: {
+                    if case .testing = afTestStatus {
+                        ProgressView().controlSize(.small)
+                        Text("Testing…")
+                            .font(.system(size: 11))
+                    } else {
+                        Label("Test connection", systemImage: "antenna.radiowaves.left.and.right")
+                            .font(.system(size: 11))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(afTestStatus == .testing || appsFlyerAppIds.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.isEmpty || appsFlyerToken.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                switch afTestStatus {
+                case .idle:
+                    EmptyView()
+                case .testing:
+                    EmptyView()
+                case .success(let msg):
+                    Label(msg, systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.green)
+                        .lineLimit(2)
+                case .failure(let msg):
+                    Label(msg, systemImage: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                }
+            }
+        }
+    }
+
+    private func runConnectionTest() {
+        let firstId = appsFlyerAppIds.first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? ""
+        let tok = appsFlyerToken.trimmingCharacters(in: .whitespaces)
+        guard !firstId.isEmpty, !tok.isEmpty else { return }
+
+        withAnimation { afTestStatus = .testing }
+
+        Task {
+            let result = await AppsFlyerService.shared.testConnection(appId: firstId, token: tok)
+            await MainActor.run {
+                withAnimation {
+                    switch result {
+                    case .success(_, let rows):
+                        let rowsText = rows == 0 ? "Connected — no data in last 3 days" : "Connected — \(rows) rows found"
+                        afTestStatus = .success(rowsText)
+                    case .authError:
+                        afTestStatus = .failure("Auth failed — use V2 API token from AppsFlyer > Settings > API Access")
+                    case .notFound(let id):
+                        afTestStatus = .failure("App ID not found: \(id)")
+                    case .networkError(let msg):
+                        afTestStatus = .failure("Network error: \(msg)")
+                    case .unknownError(let code, let body):
+                        afTestStatus = .failure("Error \(code): \(body.prefix(80))")
+                    }
+                }
             }
         }
     }
@@ -330,7 +433,7 @@ struct SettingsView: View {
             apiKey = ""
             projectName = ""
             projectIdText = ""
-            appsFlyerAppId = ""
+            appsFlyerAppIds = []
             appsFlyerToken = ""
             return
         }
@@ -338,11 +441,12 @@ struct SettingsView: View {
         projectIdText = project.projectId
         selectedColour = project.colour
         apiKey = KeychainService.shared.getAPIKey(forProjectId: project.id) ?? ""
-        appsFlyerAppId = project.appsFlyerAppId ?? ""
+        appsFlyerAppIds = project.appsFlyerAppIds
         appsFlyerToken = KeychainService.shared.getAppsFlyerToken(forProjectId: project.id) ?? ""
         showAPIKey = false
         showAppsFlyerToken = false
         saveStatus = .idle
+        afTestStatus = .idle
         showDeleteConfirm = false
     }
 
@@ -359,23 +463,30 @@ struct SettingsView: View {
 
         // Save project settings if a project is selected
         if let project = currentProject {
-            let trimmedAFAppId = appsFlyerAppId.trimmingCharacters(in: .whitespaces)
+            let cleanedIds = appsFlyerAppIds
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
             let updated = AppProject(
                 id: project.id,
                 name: projectName.trimmingCharacters(in: .whitespaces),
                 projectId: projectIdText.trimmingCharacters(in: .whitespaces),
                 colour: selectedColour,
-                appsFlyerAppId: trimmedAFAppId.isEmpty ? nil : trimmedAFAppId
+                appsFlyerAppIds: cleanedIds
             )
             let trimmedKey = apiKey.trimmingCharacters(in: .whitespaces)
             viewModel.updateProject(updated, apiKey: trimmedKey)
 
-            // Save AppsFlyer token
-            let trimmedAFToken = appsFlyerToken.trimmingCharacters(in: .whitespaces)
+            // Save AppsFlyer token — strip accidental "Bearer " prefix
+            var trimmedAFToken = appsFlyerToken.trimmingCharacters(in: .whitespaces)
+            if trimmedAFToken.lowercased().hasPrefix("bearer ") {
+                trimmedAFToken = String(trimmedAFToken.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+            }
             if trimmedAFToken.isEmpty {
                 KeychainService.shared.deleteAppsFlyerToken(forProjectId: project.id)
             } else {
                 KeychainService.shared.saveAppsFlyerToken(trimmedAFToken, forProjectId: project.id)
+                // Update field to show clean token (without "Bearer " prefix)
+                appsFlyerToken = trimmedAFToken
             }
         }
 

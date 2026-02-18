@@ -235,14 +235,15 @@ final class DashboardViewModel: ObservableObject {
 
         await withTaskGroup(of: (UUID, AppsFlyerReportData?).self) { group in
             for project in projects {
-                guard let appId = project.appsFlyerAppId, !appId.isEmpty,
+                let appIds = project.appsFlyerAppIds.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                guard !appIds.isEmpty,
                       let token = KeychainService.shared.getAppsFlyerToken(forProjectId: project.id) else {
                     continue
                 }
                 let pid = project.id
                 group.addTask {
                     let data = await AppsFlyerService.shared.fetchMarketingData(
-                        appId: appId,
+                        appIds: appIds,
                         token: token,
                         currency: currency,
                         startDate: afStartDate,
@@ -397,20 +398,22 @@ final class DashboardViewModel: ObservableObject {
 
         if selectedTab != "total",
            let uuid = UUID(uuidString: selectedTab),
-           let project = settings.projects.first(where: { $0.id == uuid }),
-           let appId = project.appsFlyerAppId, !appId.isEmpty,
-           let afToken = KeychainService.shared.getAppsFlyerToken(forProjectId: uuid) {
-            await MainActor.run { reportProgress = "Fetching marketing data..." }
+           let project = settings.projects.first(where: { $0.id == uuid }) {
+            let appIds = project.appsFlyerAppIds.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            if !appIds.isEmpty,
+               let afToken = KeychainService.shared.getAppsFlyerToken(forProjectId: uuid) {
+                await MainActor.run { reportProgress = "Fetching marketing data..." }
 
-            async let curAF = AppsFlyerService.shared.fetchMarketingData(
-                appId: appId, token: afToken, currency: currency,
-                startDate: startDate, endDate: endDate
-            )
-            async let prevAF = AppsFlyerService.shared.fetchMarketingData(
-                appId: appId, token: afToken, currency: currency,
-                startDate: previousStart, endDate: previousEnd
-            )
-            (currentMarketingReport, previousMarketingReport) = await (curAF, prevAF)
+                async let curAF = AppsFlyerService.shared.fetchMarketingData(
+                    appIds: appIds, token: afToken, currency: currency,
+                    startDate: startDate, endDate: endDate
+                )
+                async let prevAF = AppsFlyerService.shared.fetchMarketingData(
+                    appIds: appIds, token: afToken, currency: currency,
+                    startDate: previousStart, endDate: previousEnd
+                )
+                (currentMarketingReport, previousMarketingReport) = await (curAF, prevAF)
+            }
         }
 
         return try await OpenAIService.shared.generateReportWithAgentLoop(

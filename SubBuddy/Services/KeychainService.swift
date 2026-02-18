@@ -21,29 +21,95 @@ final class KeychainService {
 
     private init() {}
 
+    // MARK: - Low-level Keychain helpers
+
+    /// Reads a single item. Uses the data-protection keychain (no password prompt on macOS).
+    /// Falls back to the legacy keychain if not found, and migrates the item on success.
+    private func readKeychain(account: String) -> String? {
+        if let value = readKeychainRaw(account: account, dataProtection: true) {
+            return value
+        }
+        // Migrate legacy item to data-protection keychain (one-time, prompts once per item)
+        if let value = readKeychainRaw(account: account, dataProtection: false) {
+            logger.info("Migrating keychain item '\(account)' to data-protection keychain")
+            if let data = value.data(using: .utf8) {
+                writeKeychainRaw(account: account, data: data)
+                deleteLegacyKeychain(account: account)
+            }
+            return value
+        }
+        return nil
+    }
+
+    private func readKeychainRaw(account: String, dataProtection: Bool) -> String? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        if dataProtection {
+            query[kSecUseDataProtectionKeychain as String] = true
+        }
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8)
+        else { return nil }
+        return value
+    }
+
+    /// Saves to the data-protection keychain (no password prompt on macOS).
+    @discardableResult
+    private func writeKeychainRaw(account: String, data: Data) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+            kSecUseDataProtectionKeychain as String: true
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status != errSecSuccess {
+            logger.warning("Keychain write failed for '\(account)' (status \(status))")
+        }
+        return status == errSecSuccess
+    }
+
+    private func deleteFromKeychain(account: String) {
+        deleteLegacyKeychain(account: account)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account,
+            kSecUseDataProtectionKeychain as String: true
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
+    private func deleteLegacyKeychain(account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
     // MARK: - API Key
 
     func saveAPIKey(_ key: String) -> Bool {
         guard let data = key.data(using: .utf8) else { return false }
-
-        deleteFromKeychain()
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: apiKeyAccount,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
-        ]
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-        if status == errSecSuccess {
+        deleteFromKeychain(account: apiKeyAccount)
+        if writeKeychainRaw(account: apiKeyAccount, data: data) {
             logger.info("API key saved to Keychain")
             cachedKey = key
             deleteFallbackFile()
             return true
         }
-
-        logger.warning("Keychain save failed (status \(status)), using fallback file")
+        logger.warning("Keychain save failed, using fallback file")
         let saved = saveToFallback(key)
         if saved { cachedKey = key }
         return saved
@@ -51,28 +117,10 @@ final class KeychainService {
 
     func getAPIKey() -> String? {
         if let cachedKey { return cachedKey }
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: apiKeyAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        if status == errSecSuccess, let data = result as? Data,
-           let key = String(data: data, encoding: .utf8) {
+        if let key = readKeychain(account: apiKeyAccount) {
             cachedKey = key
             return key
         }
-
-        if status != errSecItemNotFound {
-            logger.debug("Keychain read status: \(status), trying fallback")
-        }
-
         let fallbackKey = readFromFallback()
         if fallbackKey != nil { cachedKey = fallbackKey }
         return fallbackKey
@@ -81,7 +129,7 @@ final class KeychainService {
     @discardableResult
     func deleteAPIKey() -> Bool {
         cachedKey = nil
-        deleteFromKeychain()
+        deleteFromKeychain(account: apiKeyAccount)
         deleteFallbackFile()
         return true
     }
@@ -91,26 +139,14 @@ final class KeychainService {
     @discardableResult
     func saveAPIKey(_ key: String, forProjectId id: UUID) -> Bool {
         guard let data = key.data(using: .utf8) else { return false }
-
         let account = "revenuecat-api-key-\(id.uuidString)"
         deleteFromKeychain(account: account)
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
-        ]
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-        if status == errSecSuccess {
+        if writeKeychainRaw(account: account, data: data) {
             logger.info("API key saved to Keychain for project \(id.uuidString)")
             cachedProjectKeys[id] = key
             return true
         }
-
-        logger.warning("Keychain save failed for project (status \(status)), using fallback")
+        logger.warning("Keychain save failed for project, using fallback")
         let saved = saveToFallback(key, filename: ".apikey-\(id.uuidString)")
         if saved { cachedProjectKeys[id] = key }
         return saved
@@ -118,25 +154,11 @@ final class KeychainService {
 
     func getAPIKey(forProjectId id: UUID) -> String? {
         if let cached = cachedProjectKeys[id] { return cached }
-
         let account = "revenuecat-api-key-\(id.uuidString)"
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        if status == errSecSuccess, let data = result as? Data,
-           let key = String(data: data, encoding: .utf8) {
+        if let key = readKeychain(account: account) {
             cachedProjectKeys[id] = key
             return key
         }
-
         let fallbackKey = readFromFallback(filename: ".apikey-\(id.uuidString)")
         if let fallbackKey { cachedProjectKeys[id] = fallbackKey }
         return fallbackKey
@@ -145,8 +167,7 @@ final class KeychainService {
     @discardableResult
     func deleteAPIKey(forProjectId id: UUID) -> Bool {
         cachedProjectKeys.removeValue(forKey: id)
-        let account = "revenuecat-api-key-\(id.uuidString)"
-        deleteFromKeychain(account: account)
+        deleteFromKeychain(account: "revenuecat-api-key-\(id.uuidString)")
         deleteFallbackFile(filename: ".apikey-\(id.uuidString)")
         return true
     }
@@ -159,25 +180,13 @@ final class KeychainService {
     @discardableResult
     func saveOpenAIKey(_ key: String) -> Bool {
         guard let data = key.data(using: .utf8) else { return false }
-
         deleteFromKeychain(account: openAIKeyAccount)
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: openAIKeyAccount,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
-        ]
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-        if status == errSecSuccess {
+        if writeKeychainRaw(account: openAIKeyAccount, data: data) {
             logger.info("OpenAI key saved to Keychain")
             cachedOpenAIKey = key
             return true
         }
-
-        logger.warning("Keychain save failed for OpenAI key (status \(status)), using fallback")
+        logger.warning("Keychain save failed for OpenAI key, using fallback")
         let saved = saveToFallback(key, filename: ".openai-apikey")
         if saved { cachedOpenAIKey = key }
         return saved
@@ -185,24 +194,10 @@ final class KeychainService {
 
     func getOpenAIKey() -> String? {
         if let cachedOpenAIKey { return cachedOpenAIKey }
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: openAIKeyAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        if status == errSecSuccess, let data = result as? Data,
-           let key = String(data: data, encoding: .utf8) {
+        if let key = readKeychain(account: openAIKeyAccount) {
             cachedOpenAIKey = key
             return key
         }
-
         let fallbackKey = readFromFallback(filename: ".openai-apikey")
         if let fallbackKey { cachedOpenAIKey = fallbackKey }
         return fallbackKey
@@ -223,26 +218,14 @@ final class KeychainService {
     @discardableResult
     func saveAppsFlyerToken(_ token: String, forProjectId id: UUID) -> Bool {
         guard let data = token.data(using: .utf8) else { return false }
-
         let account = "appsflyer-api-token-\(id.uuidString)"
         deleteFromKeychain(account: account)
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
-        ]
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-        if status == errSecSuccess {
+        if writeKeychainRaw(account: account, data: data) {
             logger.info("AppsFlyer token saved to Keychain for project \(id.uuidString)")
             cachedAppsFlyerTokens[id] = token
             return true
         }
-
-        logger.warning("Keychain save failed for AppsFlyer token (status \(status)), using fallback")
+        logger.warning("Keychain save failed for AppsFlyer token, using fallback")
         let saved = saveToFallback(token, filename: ".af-token-\(id.uuidString)")
         if saved { cachedAppsFlyerTokens[id] = token }
         return saved
@@ -250,25 +233,11 @@ final class KeychainService {
 
     func getAppsFlyerToken(forProjectId id: UUID) -> String? {
         if let cached = cachedAppsFlyerTokens[id] { return cached }
-
         let account = "appsflyer-api-token-\(id.uuidString)"
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        if status == errSecSuccess, let data = result as? Data,
-           let token = String(data: data, encoding: .utf8) {
+        if let token = readKeychain(account: account) {
             cachedAppsFlyerTokens[id] = token
             return token
         }
-
         let fallbackToken = readFromFallback(filename: ".af-token-\(id.uuidString)")
         if let fallbackToken { cachedAppsFlyerTokens[id] = fallbackToken }
         return fallbackToken
@@ -277,25 +246,9 @@ final class KeychainService {
     @discardableResult
     func deleteAppsFlyerToken(forProjectId id: UUID) -> Bool {
         cachedAppsFlyerTokens.removeValue(forKey: id)
-        let account = "appsflyer-api-token-\(id.uuidString)"
-        deleteFromKeychain(account: account)
+        deleteFromKeychain(account: "appsflyer-api-token-\(id.uuidString)")
         deleteFallbackFile(filename: ".af-token-\(id.uuidString)")
         return true
-    }
-
-    // MARK: - Keychain helpers
-
-    private func deleteFromKeychain() {
-        deleteFromKeychain(account: apiKeyAccount)
-    }
-
-    private func deleteFromKeychain(account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
     }
 
     // MARK: - File fallback

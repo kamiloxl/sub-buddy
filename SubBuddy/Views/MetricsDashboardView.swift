@@ -103,6 +103,16 @@ struct MetricsDashboardView: View {
                 .help("AI report")
 
                 Button {
+                    LogsWindowController.shared.show()
+                } label: {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open console logs")
+
+                Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         viewModel.showAddProject = false
                         viewModel.showAIReport = false
